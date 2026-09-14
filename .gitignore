@@ -1,0 +1,13 @@
+# Rust build output
+target/
+
+# Test recordings and captures from v0
+*.h264
+*.png
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

@@ -1,0 +1,9 @@
+[package]
+name = "host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ffmpeg-next = "9.0.0"
+image = "0.25.10"
+screencapturekit = "10.0.3"
