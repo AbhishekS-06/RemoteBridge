@@ -11,3 +11,7 @@ target/
 # Editor
 .vscode/
 .idea/
+
+# Claude Code local context, never committed
+CLAUDE.local.md
+.claude/
