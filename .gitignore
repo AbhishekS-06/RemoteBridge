@@ -4,6 +4,7 @@ target/
 # Test recordings and captures from v0
 *.h264
 *.png
+*.mp4
 
 # macOS
 .DS_Store
