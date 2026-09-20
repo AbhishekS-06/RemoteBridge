@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph Cap["1. Capture and hand-off"]
+        direction LR
+        A["SCStream callback<br/>(Apple capture thread)<br/>pack_bgra strips padding"]
+        B["tokio mpsc channel<br/>capacity 4<br/>applies backpressure"]
+        A --> B
+    end
+
+    subgraph Enc["2. Encode and send (async task)"]
+        direction LR
+        C["swscale<br/>BGRA to YUV420P"]
+        D["libx264<br/>Annex B packets"]
+        E["write_sample<br/>on video track"]
+        F["RTP packetize<br/>SRTP encrypt"]
+        C --> D --> E --> F
+    end
+
+    Cap -->|"frames"| Enc
+    Enc -->|"UDP"| G["Network"]

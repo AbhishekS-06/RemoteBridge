@@ -34,32 +34,7 @@ Three programs cooperate. The host agent produces video, the browser plays
 it, and a small signaling server helps the two find each other. Video never
 passes through the signaling server.
 
-```mermaid
-flowchart LR
-    subgraph Mac["MacBook: host agent (Rust)"]
-        direction TB
-        CAP["ScreenCaptureKit<br/>BGRA, 1280x720, 30 fps"]
-        SCALE["swscale<br/>BGRA to YUV420P"]
-        ENC["libx264<br/>H.264, zerolatency"]
-        TRACK["webrtc-rs<br/>outbound video track"]
-        CAP --> SCALE --> ENC --> TRACK
-    end
-
-    subgraph Server["Signaling server (Go)"]
-        RELAY["WebSocket relay<br/>one host slot, one viewer slot"]
-    end
-
-    subgraph Phone["Phone: browser"]
-        direction TB
-        PC["RTCPeerConnection<br/>client/index.html"]
-        VIDEO["video element"]
-        PC --> VIDEO
-    end
-
-    TRACK <-->|"offer and answer<br/>(JSON over WebSocket)"| RELAY
-    RELAY <-->|"offer and answer<br/>(JSON over WebSocket)"| PC
-    TRACK ==>|"H.264 over SRTP<br/>direct peer-to-peer"| PC
-```
+![System architecture: host agent, signaling server, and browser](docs/diagrams/architecture.png)
 
 ### Video pipeline (host)
 
@@ -67,15 +42,7 @@ The capture callback runs on a thread owned by Apple's framework, so it
 hands frames to the async side through a bounded channel. If the encoder
 falls behind, the channel fills and capture waits, so memory stays flat.
 
-```mermaid
-flowchart LR
-    A["SCStream callback<br/>(Apple capture thread)"] -->|"pack_bgra<br/>strip row padding"| B["tokio mpsc channel<br/>capacity 4"]
-    B --> C["swscale<br/>BGRA to YUV420P"]
-    C --> D["libx264<br/>Annex B packets"]
-    D --> E["TrackLocalStaticSample<br/>write_sample"]
-    E --> F["RTP packetize<br/>then SRTP encrypt"]
-    F --> G["Network"]
-```
+![Host video pipeline from screen capture to the network](docs/diagrams/video-pipeline.png)
 
 ### Connection setup (offer and answer)
 
@@ -84,25 +51,7 @@ other (ICE candidates), and encryption fingerprints. The host writes this
 into an SDP text block called the offer. The viewer replies with an answer.
 The signaling server only carries these two messages.
 
-```mermaid
-sequenceDiagram
-    participant H as Host (Rust)
-    participant S as Signaling (Go)
-    participant V as Viewer (browser)
-
-    H->>S: WebSocket connect (role=host)
-    H->>H: create offer, gather ICE candidates
-    H->>S: offer (SDP with candidates)
-    Note over S: stores the pending offer
-    V->>S: WebSocket connect (role=viewer)
-    S->>V: replay the pending offer
-    V->>V: set remote description, create answer, gather candidates
-    V->>S: answer (SDP with candidates)
-    Note over S: clears the pending offer
-    S->>H: answer
-    H-->>V: ICE connectivity checks (direct UDP)
-    H-->>V: DTLS handshake, then encrypted H.264 over SRTP
-```
+![Connection setup: offer and answer exchange through the signaling server](docs/diagrams/connection-setup.png)
 
 If the viewer connects first, the offer is relayed live instead of replayed.
 Either order ends the same way.
@@ -112,14 +61,11 @@ Either order ends the same way.
 The relay is deliberately thin. It reads one field, `type`, so it knows when
 an offer is waiting. All other content passes through as opaque bytes.
 
-```mermaid
-stateDiagram-v2
-    [*] --> NoOffer
-    NoOffer --> OfferPending: host sends offer
-    OfferPending --> NoOffer: viewer sends answer
-    OfferPending --> NoOffer: host disconnects
-    OfferPending --> OfferPending: viewer connects (offer replayed)
-```
+![Signaling server offer lifecycle state diagram](docs/diagrams/offer-lifecycle.png)
+
+The diagrams are static images rendered from the Mermaid sources in
+`docs/diagrams/`. After editing a `.mmd` file, regenerate the PNGs with
+`sh docs/diagrams/render.sh` (needs Node and Chrome).
 
 ## Tech stack
 
@@ -150,6 +96,7 @@ RemoteBridge/
     main.go
   client/              Browser viewer
     index.html
+  docs/diagrams/       Diagram sources (.mmd) and the rendered PNGs shown above
 ```
 
 ## Running it

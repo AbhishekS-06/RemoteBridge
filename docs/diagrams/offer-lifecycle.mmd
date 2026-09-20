@@ -1,0 +1,7 @@
+stateDiagram-v2
+    direction LR
+    [*] --> NoOffer
+    NoOffer --> OfferPending: host sends offer
+    OfferPending --> NoOffer: viewer sends answer
+    OfferPending --> NoOffer: host disconnects
+    OfferPending --> OfferPending: viewer connects,<br/>offer replayed

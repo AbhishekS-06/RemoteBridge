@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant H as Host (Rust)
+    participant S as Signaling (Go)
+    participant V as Viewer (browser)
+
+    H->>S: WebSocket connect (role=host)
+    H->>H: create offer, gather ICE candidates
+    H->>S: offer (SDP with candidates)
+    Note over S: stores the pending offer
+    V->>S: WebSocket connect (role=viewer)
+    S->>V: replay the pending offer
+    V->>V: set remote description,<br/>create answer, gather candidates
+    V->>S: answer (SDP with candidates)
+    Note over S: clears the pending offer
+    S->>H: answer
+    H-->>V: ICE connectivity checks (direct UDP)
+    H-->>V: DTLS handshake, then encrypted H.264 over SRTP

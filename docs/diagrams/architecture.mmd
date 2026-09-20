@@ -1,0 +1,25 @@
+flowchart LR
+    subgraph Mac["MacBook: host agent (Rust)"]
+        direction TB
+        CAP["ScreenCaptureKit<br/>BGRA, 1280x720, 30 fps"]
+        SCALE["swscale<br/>BGRA to YUV420P"]
+        ENC["libx264<br/>H.264, zerolatency"]
+        TRACK["webrtc-rs<br/>outbound video track"]
+        CAP --> SCALE --> ENC --> TRACK
+    end
+
+    subgraph Server["Signaling server (Go)"]
+        direction TB
+        RELAY["WebSocket relay<br/>host slot, viewer slot"]
+    end
+
+    subgraph Phone["Phone: browser"]
+        direction TB
+        PC["RTCPeerConnection<br/>client/index.html"]
+        VIDEO["video element"]
+        PC --> VIDEO
+    end
+
+    Mac <-->|"offer and answer<br/>(WebSocket)"| Server
+    Server <-->|"offer and answer<br/>(WebSocket)"| Phone
+    Mac ==>|"H.264 over SRTP<br/>direct peer-to-peer"| Phone

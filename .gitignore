@@ -6,6 +6,9 @@ target/
 *.png
 *.mp4
 
+# ...except the README diagrams, which are committed on purpose
+!docs/diagrams/*.png
+
 # macOS
 .DS_Store
 
