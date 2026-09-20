@@ -1,12 +1,16 @@
 use std::fs::File;
 use std::sync::mpsc::{self, Sender};
+use std::time::Duration;
 
 use ffmpeg_next as ffmpeg;
 use screencapturekit::cm::CMSampleBufferExt;
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
+use webrtc::media::Sample;
 
 mod encoder;
+mod signaling;
+mod webrtc_host;
 
 const CAPTURE_WIDTH: u32 = 1280;
 const CAPTURE_HEIGHT: u32 = 720;
@@ -139,6 +143,31 @@ fn pack_bgra(src: &[u8], width: usize, height: usize, stride: usize) -> RawFrame
     }
 }
 
+/// Same as `CaptureHandler`, but hands frames to an async consumer over a
+/// tokio channel instead of std::sync::mpsc -- the WebRTC path awaits this
+/// channel from inside the tokio runtime, `CaptureHandler`'s consumer doesn't.
+struct WebRtcCaptureHandler {
+    tx: tokio::sync::mpsc::Sender<RawFrame>,
+}
+
+impl SCStreamOutputTrait for WebRtcCaptureHandler {
+    fn did_output_sample_buffer(&self, sample: CMSampleBuffer, _: SCStreamOutputType) {
+        let Some(pixel_buffer) = sample.pixel_buffer() else {
+            return;
+        };
+        let Ok(guard) = pixel_buffer.lock(CVPixelBufferLockFlags::READ_ONLY) else {
+            return;
+        };
+        let Some(bytes) = (unsafe { guard.as_slice() }) else {
+            return;
+        };
+        let frame = pack_bgra(bytes, guard.width(), guard.height(), guard.bytes_per_row());
+        // blocking_send is correct here: this callback runs on Apple's
+        // capture thread, not inside the tokio runtime.
+        let _ = self.tx.blocking_send(frame);
+    }
+}
+
 /// Copy a tightly packed `RawFrame` into an ffmpeg BGRA frame, which has its
 /// own (possibly different) row alignment -- same stride-safety concern as
 /// `gradient_frame`'s plane writes, just for one packed plane instead of
@@ -213,6 +242,61 @@ fn run_capture() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// v1: same pipeline as `run_capture`, but frames go to a WebRTC video
+/// track over the signaling handshake instead of to a file, and the loop
+/// runs until the process is killed instead of stopping at a fixed count.
+async fn run_webrtc() -> Result<(), Box<dyn std::error::Error>> {
+    let mut signaling =
+        signaling::SignalingClient::connect("ws://localhost:8080/ws?role=host").await?;
+    let (_peer_connection, video_track) = webrtc_host::connect_host(&mut signaling).await?;
+
+    let config = SCStreamConfiguration::new()
+        .with_width(CAPTURE_WIDTH)
+        .with_height(CAPTURE_HEIGHT)
+        .with_pixel_format(PixelFormat::BGRA)
+        .with_fps(CAPTURE_FILE_FPS);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let stream = start_capture_stream(config, WebRtcCaptureHandler { tx })?;
+
+    let mut h264_encoder =
+        encoder::H264Encoder::new(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FILE_FPS as i32)?;
+    let mut scaler = ffmpeg::software::scaling::Context::get(
+        ffmpeg::format::Pixel::BGRA,
+        CAPTURE_WIDTH,
+        CAPTURE_HEIGHT,
+        ffmpeg::format::Pixel::YUV420P,
+        CAPTURE_WIDTH,
+        CAPTURE_HEIGHT,
+        ffmpeg::software::scaling::Flags::FAST_BILINEAR,
+    )?;
+
+    println!("streaming, ctrl-c to stop");
+    let mut frame_num: i64 = 0;
+    while let Some(raw) = rx.recv().await {
+        let src_frame = bgra_frame(&raw);
+        let mut yuv_frame = ffmpeg::frame::Video::empty();
+        scaler.run(&src_frame, &mut yuv_frame)?;
+        yuv_frame.set_pts(Some(frame_num));
+        frame_num += 1;
+
+        let mut packet = Vec::new();
+        h264_encoder.encode(&yuv_frame, &mut packet)?;
+        if !packet.is_empty() {
+            video_track
+                .write_sample(&Sample {
+                    data: packet.into(),
+                    duration: Duration::from_secs_f64(1.0 / CAPTURE_FILE_FPS as f64),
+                    ..Default::default()
+                })
+                .await?;
+        }
+    }
+
+    stream.stop_capture()?;
+    Ok(())
+}
+
 /// Build one synthetic YUV420P test frame: a horizontal luma ramp that
 /// shifts sideways with `frame_num`, so playback shows motion instead of a
 /// static image. Chroma is held at 128 (neutral), so it renders grayscale.
@@ -268,11 +352,13 @@ fn run_gradient() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("gradient") => return run_gradient(),
         Some("capture") => return run_capture(),
+        Some("webrtc") => return run_webrtc().await,
         _ => {}
     }
 

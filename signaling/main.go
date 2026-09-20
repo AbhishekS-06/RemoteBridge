@@ -98,6 +98,7 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	h := &hub{}
+	http.Handle("/", http.FileServer(http.Dir("../client")))
 	http.HandleFunc("/ws", h.handleWS)
 
 	addr := ":8080"
