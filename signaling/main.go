@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
@@ -15,6 +16,12 @@ type hub struct {
 	mu     sync.Mutex
 	host   *websocket.Conn
 	viewer *websocket.Conn
+
+	// The host's offer, held until a viewer answers it. The host sends its
+	// offer once right after connecting, so without this a viewer that shows
+	// up later (or a phone on a slow network) would never see it and the
+	// host would wait forever.
+	pendingOffer []byte
 }
 
 var upgrader = websocket.Upgrader{
@@ -24,13 +31,23 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// register fills the role's slot. A viewer that arrives while an offer is
+// waiting gets it immediately, so connect order between host and viewer
+// no longer matters. Runs under the lock so the replay can't interleave
+// with a live relay write to the same connection (gorilla/websocket allows
+// only one concurrent writer per connection).
 func (h *hub) register(role string, conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if role == "host" {
 		h.host = conn
-	} else {
-		h.viewer = conn
+		return
+	}
+	h.viewer = conn
+	if h.pendingOffer != nil {
+		if err := conn.WriteMessage(websocket.TextMessage, h.pendingOffer); err != nil {
+			log.Println("offer replay failed:", err)
+		}
 	}
 }
 
@@ -39,22 +56,47 @@ func (h *hub) unregister(role string, conn *websocket.Conn) {
 	defer h.mu.Unlock()
 	if role == "host" && h.host == conn {
 		h.host = nil
+		// The offer belongs to this host's peer connection. Once the host
+		// is gone, replaying it to a new viewer would hand it a dead offer.
+		h.pendingOffer = nil
 	}
 	if role == "viewer" && h.viewer == conn {
 		h.viewer = nil
 	}
 }
 
-// peerOf returns the *other* slot's connection, so a message from the host
-// goes to the viewer and vice versa. Read under lock since the other side
-// can disconnect concurrently.
-func (h *hub) peerOf(role string) *websocket.Conn {
+// relay forwards a message to the other role. The server is still a relay,
+// not a signaling protocol implementation: the only thing it reads is the
+// "type" field, to know when an offer is waiting (remember it) and when it
+// has been answered (forget it). Everything else passes through as opaque
+// bytes. The whole thing runs under the lock so writes to a connection are
+// serialized with register's replay.
+func (h *hub) relay(role string, msgType int, msg []byte) {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(msg, &envelope)
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if role == "host" {
-		return h.viewer
+
+	if role == "host" && envelope.Type == "offer" {
+		h.pendingOffer = msg
 	}
-	return h.host
+	if role == "viewer" && envelope.Type == "answer" {
+		h.pendingOffer = nil
+	}
+
+	peer := h.viewer
+	if role == "viewer" {
+		peer = h.host
+	}
+	if peer == nil {
+		return // other side isn't connected yet, drop it
+	}
+	if err := peer.WriteMessage(msgType, msg); err != nil {
+		log.Println("relay failed:", err)
+	}
 }
 
 func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -76,23 +118,12 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s connected", role)
 
 	for {
-		// Signaling messages are JSON blobs the host and browser agree on
-		// (SDP offers/answers, ICE candidates). This server treats them as
-		// opaque bytes -- it relays, it doesn't parse -- so it stays correct
-		// even if the message shape changes later.
 		msgType, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("%s disconnected: %v", role, err)
 			return
 		}
-
-		peer := h.peerOf(role)
-		if peer == nil {
-			continue // other side isn't connected yet, drop it
-		}
-		if err := peer.WriteMessage(msgType, msg); err != nil {
-			log.Println("relay failed:", err)
-		}
+		h.relay(role, msgType, msg)
 	}
 }
 
