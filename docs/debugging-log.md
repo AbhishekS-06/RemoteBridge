@@ -127,6 +127,26 @@ RUST_LOG=webrtc_dtls=debug,webrtc=debug cargo run -- webrtc ...   # library logs
   the phone's relay candidate on coturn, so cellular could not go direct and
   TURN carried the stream. The relay-only run connected relay to relay.
 
+### 8. CI host build fails in `apple-metal`, builds fine locally
+
+- **Symptom:** The macOS CI job failed in the build script of `apple-metal
+  v0.9.0`: `cannot find 'MTLSamplerReductionMode' in scope` and
+  `MTLSamplerDescriptor has no member 'lodBias'`. `cargo build` on the Mac
+  works.
+- **Diagnosis:** `cargo tree -i apple-metal` showed it comes from
+  `screencapturekit 10.0.3`, and its build script compiles Swift. The failing
+  code sits inside `if #available(macOS 26.0, *)`. `xcrun
+  --show-sdk-version` on the Mac printed 26.5; the `macos-15` runner uses the
+  macOS 15 SDK.
+- **Cause:** `#available` is a runtime check. The compiler still needs the
+  API to exist in the SDK it builds against, and the macOS 15 SDK does not
+  have these Metal APIs.
+- **Fix:** Run the host job on `macos-26`, and print the Xcode and SDK
+  versions at the start of the job.
+- **Lesson:** CI must build against the same SDK generation as the dev
+  machine. "Works locally" can mean "my SDK is newer". Compare toolchain
+  versions first when CI and local disagree.
+
 ## Provider choice (not a bug, but it cost time)
 
 - **Azure for Students:** every small VM size returned

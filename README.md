@@ -86,7 +86,7 @@ The diagrams are static images rendered from the Mermaid sources in
 | Signaling server | Go, `gorilla/websocket` | Small relay, also serves the client page |
 | Client | Plain HTML and JavaScript, browser `RTCPeerConnection` | Nothing to install on the phone |
 | NAT traversal (v2) | Public STUN, plus self-hosted coturn (TURN) with short-lived credentials | Direct path when possible, relay when not |
-| CI | GitHub Actions: Go fmt, vet and race-enabled tests on Linux; host build and tests on a macOS runner | The host needs ScreenCaptureKit, which only exists on macOS |
+| CI | GitHub Actions: Go fmt, vet and race-enabled tests on Linux; host build and tests on a macOS 26 runner | The host needs ScreenCaptureKit, which only exists on macOS; the capture crate's Swift code needs the macOS 26 SDK |
 | Deploy (planned) | Docker, GitHub Actions, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
 
 ## Project layout

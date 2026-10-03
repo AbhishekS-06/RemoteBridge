@@ -166,6 +166,9 @@ net. Two jobs: the Go server on Linux (gofmt check, `go vet`, `go test
 -race`), and the host on a macOS runner (`brew install ffmpeg`, `cargo
 build` and `cargo test`), because ScreenCaptureKit only exists on macOS.
 A rustfmt check was left out: the host code is not rustfmt-formatted yet.
+The first run failed: I picked the `macos-15` runner without checking which
+SDK the dependencies need, and `apple-metal` needs the macOS 26 SDK
+(debugging log #8). Moved the job to `macos-26`.
 Docker, k3s and automatic deploy wait until after v4, when the signaling
 protocol stops changing and a long-lived server exists.
 

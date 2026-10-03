@@ -26,12 +26,16 @@ jobs:
   host:
     name: Host agent (Rust, macOS)
     # ScreenCaptureKit only exists on macOS, so the host cannot build on Linux.
-    runs-on: macos-15
+    # macOS 26: apple-metal (via screencapturekit) compiles Swift that needs
+    # the macOS 26 SDK; the macos-15 image's SDK lacks those Metal APIs.
+    runs-on: macos-26
     defaults:
       run:
         working-directory: host
     steps:
       - uses: actions/checkout@v4
+      - name: Show Xcode and SDK
+        run: xcodebuild -version && xcrun --show-sdk-version
       - name: Install FFmpeg
         run: brew install ffmpeg pkg-config
       - uses: dtolnay/rust-toolchain@stable
