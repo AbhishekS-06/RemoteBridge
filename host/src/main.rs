@@ -143,6 +143,18 @@ fn pack_bgra(src: &[u8], width: usize, height: usize, stride: usize) -> RawFrame
     }
 }
 
+/// Read a setting from `--flag value` in the arguments, or else from an
+/// environment variable. The flag wins, so a one-off override doesn't need
+/// the environment cleared. Hand-rolled instead of a CLI crate because the
+/// host has exactly two options.
+fn option_value(args: &[String], flag: &str, env_var: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+        .or_else(|| std::env::var(env_var).ok())
+        .filter(|value| !value.is_empty())
+}
+
 /// Same as `CaptureHandler`, but hands frames to an async consumer over a
 /// tokio channel instead of std::sync::mpsc -- the WebRTC path awaits this
 /// channel from inside the tokio runtime, `CaptureHandler`'s consumer doesn't.
@@ -245,10 +257,27 @@ fn run_capture() -> Result<(), Box<dyn std::error::Error>> {
 /// v1: same pipeline as `run_capture`, but frames go to a WebRTC video
 /// track over the signaling handshake instead of to a file, and the loop
 /// runs until the process is killed instead of stopping at a fixed count.
-async fn run_webrtc() -> Result<(), Box<dyn std::error::Error>> {
-    let mut signaling =
-        signaling::SignalingClient::connect("ws://localhost:8080/ws?role=host").await?;
-    let (_peer_connection, video_track) = webrtc_host::connect_host(&mut signaling).await?;
+///
+/// Where to connect comes from `--server <ws(s)://host[:port]>` and
+/// `--token <secret>`, falling back to the REMOTEBRIDGE_SERVER and
+/// REMOTEBRIDGE_TOKEN environment variables, then to the local dev server.
+/// Prefer the env var for the token: command-line arguments show up in `ps`.
+async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let server = option_value(args, "--server", "REMOTEBRIDGE_SERVER")
+        .unwrap_or_else(|| "ws://localhost:8080".to_owned());
+    let token = option_value(args, "--token", "REMOTEBRIDGE_TOKEN");
+    let url = signaling::host_url(&server, token.as_deref())?;
+
+    // --relay (or REMOTEBRIDGE_FORCE_RELAY=1) makes the stream go through
+    // TURN only. Use it to prove the relay works, since otherwise a direct
+    // connection would quietly win whenever one is possible.
+    let force_relay = args.iter().any(|a| a == "--relay")
+        || std::env::var("REMOTEBRIDGE_FORCE_RELAY").is_ok_and(|v| v == "1");
+
+    println!("connecting to signaling server at {server}");
+    let mut signaling = signaling::SignalingClient::connect(&url).await?;
+    let (_peer_connection, video_track) =
+        webrtc_host::connect_host(&mut signaling, force_relay).await?;
 
     let config = SCStreamConfiguration::new()
         .with_width(CAPTURE_WIDTH)
@@ -354,11 +383,12 @@ fn run_gradient() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("gradient") => return run_gradient(),
         Some("capture") => return run_capture(),
-        Some("webrtc") => return run_webrtc().await,
+        Some("webrtc") => return run_webrtc(&args[2..]).await,
         _ => {}
     }
 

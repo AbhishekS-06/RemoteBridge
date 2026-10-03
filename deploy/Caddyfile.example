@@ -1,0 +1,6 @@
+# Caddy config: gets a free HTTPS certificate for the domain automatically and
+# proxies to the signaling server, including its WebSocket. Copy to
+# /etc/caddy/Caddyfile, replace the domain, then: sudo systemctl reload caddy
+yourname.duckdns.org {
+	reverse_proxy 127.0.0.1:8080
+}

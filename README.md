@@ -8,7 +8,7 @@ a phone. No third-party remote desktop service is involved.
 ![Go](https://img.shields.io/badge/signaling-Go-00ADD8?logo=go&logoColor=white)
 ![WebRTC](https://img.shields.io/badge/transport-WebRTC-333333?logo=webrtc)
 ![Platform](https://img.shields.io/badge/host%20platform-macOS-lightgrey?logo=apple)
-![Status](https://img.shields.io/badge/status-v1%20working%2C%20v2%20in%20progress-blue)
+![Status](https://img.shields.io/badge/status-v2%20built%2C%20campus%20test%20pending-blue)
 
 ## Current status
 
@@ -16,17 +16,22 @@ a phone. No third-party remote desktop service is involved.
 |-------|-------|-------|
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
-| v2 | STUN, then self-hosted coturn, so it works across networks | In progress |
+| v2 | STUN, then self-hosted coturn, so it works across networks | Works phone-on-cellular; campus test pending |
 | v3 | Input forwarding over data channels, touch mapping | Planned |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
-**What works today:** the Mac's screen appears in a browser on the same
-Wi-Fi network (verified in Safari on iPhone and in a Mac browser). The host
-and the viewer can start in either order.
+**What works today:** the Mac's screen appears in a browser through a
+self-hosted signaling server and coturn relay on a VPS. Verified: a Mac
+browser (Chrome or Brave) connecting through the VPS directly, and a
+relay-only run that proved the video passes through coturn, and Safari on an
+iPhone on cellular streaming from the Mac on home Wi-Fi, in both normal and
+relay-only mode. On cellular, ICE picked the TURN relay even in normal mode,
+because the carrier's NAT blocked a direct path. The host and the viewer can
+start in either order.
 
-**What does not work yet:** connecting from a different network, controlling
-the Mac from the phone, and more than one viewer.
+**Not yet verified:** the campus Wi-Fi case that motivated v2. Not implemented:
+controlling the Mac from the phone, and more than one viewer.
 
 ## How it works
 
@@ -79,7 +84,7 @@ The diagrams are static images rendered from the Mermaid sources in
 | Signaling client (host) | `tokio-tungstenite`, `serde_json` | JSON messages over WebSocket |
 | Signaling server | Go, `gorilla/websocket` | Small relay, also serves the client page |
 | Client | Plain HTML and JavaScript, browser `RTCPeerConnection` | Nothing to install on the phone |
-| NAT traversal (v2) | Public STUN, then self-hosted coturn | Direct path when possible, relay when not |
+| NAT traversal (v2) | Public STUN, plus self-hosted coturn (TURN) with short-lived credentials | Direct path when possible, relay when not |
 | Deploy (planned) | Docker, GitHub Actions, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
 
 ## Project layout
@@ -97,6 +102,10 @@ RemoteBridge/
   client/              Browser viewer
     index.html
   docs/diagrams/       Diagram sources (.mmd) and the rendered PNGs shown above
+  docs/deploy.md       Step-by-step VPS deployment of signaling and coturn
+  docs/process-log.md  How the project was built: decisions, detours, mistakes
+  docs/debugging-log.md  Problems hit, how each was diagnosed, and the fixes
+  deploy/              Example configs: coturn, systemd unit, Caddy
 ```
 
 ## Running it
@@ -140,6 +149,39 @@ is the normal end of a session.
 | `cargo run -- capture` | Captures 10 seconds of screen to `capture.h264` |
 | `cargo run -- webrtc` | Streams the screen to a connected viewer |
 
+### Configuration
+
+Everything defaults to a local, unauthenticated setup, so the steps above
+work with no configuration. To point at a remote server or require a token:
+
+| Setting | Where | Default | Purpose |
+|---------|-------|---------|---------|
+| `REMOTEBRIDGE_TOKEN` | Signaling server env | unset (open, with a startup warning) | Shared secret every connection must present |
+| `REMOTEBRIDGE_ADDR` | Signaling server env | `:8080` | Address the server listens on |
+| `--server` or `REMOTEBRIDGE_SERVER` | Host | `ws://localhost:8080` | Signaling server, `ws://` or `wss://` |
+| `--token` or `REMOTEBRIDGE_TOKEN` | Host | none | Token to present (prefer the env var; arguments show up in `ps`) |
+| `?token=...` on the page URL | Viewer | none | Token the browser presents |
+| `REMOTEBRIDGE_TURN_HOST` | Signaling server env | unset (STUN only) | coturn address, `host:port` |
+| `REMOTEBRIDGE_TURN_SECRET` | Signaling server env | unset | Secret shared with coturn; set both TURN variables or neither |
+| `--relay` or `REMOTEBRIDGE_FORCE_RELAY=1` | Host | off | Use only TURN-relayed candidates, to prove the relay works |
+| `?relay=1` on the page URL | Viewer | off | Same, for the browser |
+
+Tokens may only contain letters, digits, `-` and `_`, for example the output
+of `openssl rand -hex 16`.
+
+```
+# server
+export REMOTEBRIDGE_TOKEN=<secret>
+go run .
+
+# host
+export REMOTEBRIDGE_TOKEN=<secret>
+cargo run -- webrtc --server wss://signal.example.com
+
+# viewer (phone)
+https://signal.example.com/?token=<secret>
+```
+
 ## Design decisions
 
 - **Host is the offerer, and the server holds its offer.** The host sends
@@ -152,21 +194,41 @@ is the normal end of a session.
   compression efficiency is traded for lower delay.
 - **Signaling is not part of the media path.** The server can be replaced or
   moved without touching the video pipeline.
+- **A patched copy of `webrtc-dtls` is vendored.** The version `webrtc-rs`
+  0.11 depends on picks the first key-exchange curve a browser lists and
+  aborts the handshake ("invalid named curve") if it does not support that
+  one. Chromium-based browsers list newer curves first, so Chrome and Brave
+  could not connect while Safari could. `host/vendor/webrtc-dtls` is that
+  exact version with the fix upstream later made (choose the first curve
+  both sides support), wired in through `[patch.crates-io]` in
+  `host/Cargo.toml`. It should be removed when `webrtc` is upgraded.
+- **TURN credentials are minted per connection, not stored in the page.** A
+  browser cannot keep a permanent TURN password secret. The signaling server
+  signs a username containing an expiry time with a secret it shares with
+  coturn (HMAC-SHA1, coturn's `use-auth-secret` scheme) and sends the result
+  in a `config` message right after connecting. Leaked credentials stop
+  working after 24 hours, and the shared secret never leaves the servers.
 
 ## Security
 
-- Media is encrypted end to end by WebRTC (DTLS-SRTP). A relay, when v2 adds
-  one, only sees encrypted packets.
-- The signaling server has no authentication yet. Anyone who can reach it can
-  connect as a viewer and receive the host's offer. Do not expose it publicly
-  while the host is running. Signaling tokens and DTLS fingerprint pairing
-  are planned for v4. No custom cryptography is used.
+- Media is encrypted end to end by WebRTC (DTLS-SRTP). The TURN relay only
+  forwards encrypted packets and cannot see the screen.
+- The signaling server accepts a shared token (`REMOTEBRIDGE_TOKEN`) and
+  rejects connections without it before they can take a slot. Without a
+  token set it is open, and it logs a warning at startup. Do not expose an
+  open server publicly while the host is running.
+- Over plain `ws://` the token travels in clear text. For a public server,
+  put TLS in front of it and use `wss://`; the host supports `wss://`.
+- The viewer's token is in the page URL, so it can end up in browser history
+  and server logs. This is a stopgap. DTLS fingerprint pairing and
+  per-device tokens are planned for v4. No custom cryptography is used.
 
 ## Known limitations
 
-- Same-LAN only: no STUN or TURN, and signaling is reachable only on the LAN.
-- The host connects to `ws://localhost:8080`, so it must run on the same
-  machine as the signaling server.
+- The campus Wi-Fi case has not been tested yet. Networks that block both UDP and TCP on port 3478 would need coturn on
+  port 443, which conflicts with Caddy and is not set up.
+- The shared token is in the page URL, and the test server is a single Vultr
+  instance meant to be destroyed after testing (see `docs/deploy.md`).
 - Reloading the viewer after it has connected requires restarting the host.
 - View only: no keyboard or mouse input.
 - One viewer at a time, main display only, macOS host only.

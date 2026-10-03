@@ -1,0 +1,32 @@
+# coturn config for RemoteBridge. Copy to /etc/turnserver.conf on the VPS and
+# replace the CHANGE_ME values. See docs/deploy.md.
+
+listening-port=3478
+
+# Needed when the VPS is behind NAT (Azure, AWS, GCP, Oracle): the server
+# only knows its private address, so coturn must be told the public one to
+# put in relay candidates. Format: external-ip=<public-ip>/<private-ip>
+# (find the private one with `hostname -I`). Providers that put the public
+# IP directly on the server (Vultr, DigitalOcean) can leave this out.
+# external-ip=CHANGE_ME/CHANGE_ME
+
+realm=remotebridge
+
+# Credentials are minted by the signaling server, not stored here. It signs
+# a "<expiry>:<label>" username with this secret; coturn recomputes the HMAC
+# and rejects expired or forged credentials. Must equal
+# REMOTEBRIDGE_TURN_SECRET on the signaling server.
+use-auth-secret
+static-auth-secret=CHANGE_ME
+
+# Range the server uses to relay media. Open this UDP range in the firewall.
+min-port=49152
+max-port=49252
+
+fingerprint
+no-cli
+
+# Plain TURN on 3478 only for now. TLS on 5349/443 is a later fallback for
+# networks that block 3478.
+no-tls
+no-dtls

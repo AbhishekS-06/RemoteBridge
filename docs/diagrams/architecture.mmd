@@ -20,6 +20,13 @@ flowchart LR
         PC --> VIDEO
     end
 
+    subgraph Relay["coturn relay (VPS)"]
+        direction TB
+        TURN["TURN server<br/>fallback when a direct<br/>path is blocked"]
+    end
+
     Mac <-->|"offer and answer<br/>(WebSocket)"| Server
     Server <-->|"offer and answer<br/>(WebSocket)"| Phone
     Mac ==>|"H.264 over SRTP<br/>direct peer-to-peer"| Phone
+    Mac -.->|"relayed if direct fails"| Relay
+    Relay -.-> Phone

@@ -1,0 +1,27 @@
+# systemd unit for the signaling server. Copy to
+# /etc/systemd/system/remotebridge-signaling.service, replace the CHANGE_ME
+# values and the user/paths, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now remotebridge-signaling
+[Unit]
+Description=RemoteBridge signaling server
+After=network.target
+
+[Service]
+# The server serves ../client relative to its working directory, so this
+# must be the signaling/ directory with client/ next to it.
+WorkingDirectory=/home/CHANGE_ME/remotebridge/signaling
+ExecStart=/home/CHANGE_ME/remotebridge/signaling/remotebridge-signaling
+User=CHANGE_ME
+
+# Listen on localhost only; Caddy terminates TLS and proxies to it, so this
+# port is never exposed directly.
+Environment=REMOTEBRIDGE_ADDR=127.0.0.1:8080
+Environment=REMOTEBRIDGE_TOKEN=CHANGE_ME
+Environment=REMOTEBRIDGE_TURN_HOST=CHANGE_ME_PUBLIC_IP:3478
+Environment=REMOTEBRIDGE_TURN_SECRET=CHANGE_ME
+
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

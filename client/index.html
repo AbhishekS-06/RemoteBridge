@@ -6,27 +6,78 @@
   <style>
     body { margin: 0; background: black; }
     video { width: 100vw; height: 100vh; object-fit: contain; }
+    #status {
+      position: fixed; top: 6px; left: 6px; z-index: 1;
+      color: #9f9; font: 12px/1.3 monospace; white-space: pre;
+      background: rgba(0, 0, 0, 0.6); padding: 4px 6px;
+    }
   </style>
 </head>
 <body>
   <video id="remote" autoplay playsinline muted></video>
+  <div id="status">connecting to signaling...</div>
   <script>
-    // location.hostname works as long as this page itself was loaded from
-    // the Mac's LAN IP rather than localhost -- see the run instructions.
-    const SIGNALING_URL = "ws://" + location.hostname + ":8080/ws?role=viewer";
+    // The signaling server is whatever server served this page, so the same
+    // file works from localhost, a LAN IP, or a VPS. wss on an https page,
+    // ws otherwise (browsers block ws from https pages). location.host keeps
+    // the port, so it also works behind a proxy on 443.
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const params = new URLSearchParams(location.search);
+    // The shared secret rides along from the page URL: open
+    // http://<server>/?token=<secret>. Empty when the server has no token.
+    const token = params.get("token") || "";
+    // ?relay=1 restricts the connection to TURN-relayed candidates only, to
+    // prove the relay works. Same idea as the host's --relay flag.
+    const forceRelay = params.get("relay") === "1";
+    const SIGNALING_URL =
+      wsProtocol + "//" + location.host + "/ws?role=viewer&token=" + encodeURIComponent(token);
 
-    const pc = new RTCPeerConnection();
     const video = document.getElementById("remote");
-    pc.ontrack = (event) => {
-      video.srcObject = event.streams[0];
-    };
+    let pc = null;
 
-    function waitForIceGatheringComplete(pc) {
-      if (pc.iceGatheringState === "complete") return Promise.resolve();
+    // Built only once the server's config message arrives, because the ICE
+    // servers (including the short-lived TURN credentials) come from it.
+    // Public STUN is listed here too, same as the host (webrtc_host.rs).
+    function createPeerConnection(serverIceServers) {
+      const peer = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }, ...serverIceServers],
+        iceTransportPolicy: forceRelay ? "relay" : "all",
+      });
+      peer.ontrack = (event) => {
+        video.srcObject = event.streams[0];
+      };
+
+      // Small on-screen status so a phone, with no console, still shows why a
+      // connection fails: connection/ICE state and the kinds of candidate
+      // this side gathered (host, srflx from STUN, relay from TURN).
+      const seen = {};
+      const statusEl = document.getElementById("status");
+      const render = () => {
+        statusEl.textContent =
+          "connection: " + peer.connectionState + "\n" +
+          "ice: " + peer.iceConnectionState + "\n" +
+          "candidates: " + (Object.entries(seen).map(([k, v]) => k + "=" + v).join(" ") || "none") +
+          (forceRelay ? "\nrelay-only mode" : "");
+      };
+      peer.onicecandidate = (event) => {
+        if (event.candidate) {
+          const type = event.candidate.type || "unknown";
+          seen[type] = (seen[type] || 0) + 1;
+          render();
+        }
+      };
+      peer.onconnectionstatechange = render;
+      peer.oniceconnectionstatechange = render;
+      render();
+      return peer;
+    }
+
+    function waitForIceGatheringComplete(peer) {
+      if (peer.iceGatheringState === "complete") return Promise.resolve();
       return new Promise((resolve) => {
-        pc.addEventListener("icegatheringstatechange", function check() {
-          if (pc.iceGatheringState === "complete") {
-            pc.removeEventListener("icegatheringstatechange", check);
+        peer.addEventListener("icegatheringstatechange", function check() {
+          if (peer.iceGatheringState === "complete") {
+            peer.removeEventListener("icegatheringstatechange", check);
             resolve();
           }
         });
@@ -36,14 +87,20 @@
     const ws = new WebSocket(SIGNALING_URL);
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
-      if (msg.type !== "offer") return;
+
+      // The server always sends this first, so pc exists before any offer.
+      if (msg.type === "config") {
+        pc = createPeerConnection(msg.ice_servers || []);
+        return;
+      }
+      if (msg.type !== "offer" || !pc) return;
 
       await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
       // No trickle ICE for v1 (same LAN) -- wait for gathering to finish so
-      // the answer already has every host candidate embedded.
+      // the answer already has every candidate embedded.
       await waitForIceGatheringComplete(pc);
 
       ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription.sdp }));

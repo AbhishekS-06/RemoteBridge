@@ -7,9 +7,22 @@ edition = "2024"
 ffmpeg-next = "9.0.0"
 image = "0.25.10"
 screencapturekit = "10.0.3"
+# Prints the libraries' own logs (ICE, DTLS) when RUST_LOG is set, for example
+# RUST_LOG=webrtc_dtls=debug. Silent when it is not set.
+env_logger = "0.11"
 webrtc = "0.11"
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.21"
+# rustls-tls-webpki-roots is what makes wss:// work. Without a TLS feature,
+# connect_async fails on any wss:// URL, which is what a public server uses.
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# webrtc-dtls 0.10.0 fails the DTLS handshake with "invalid named curve" when a
+# browser lists a curve it doesn't implement first (current Chrome and Brave).
+# vendor/webrtc-dtls is that exact version with the upstream fix applied; see
+# the LOCAL PATCH comment in vendor/webrtc-dtls/src/flight/flight0.rs. Remove
+# this section, and the vendor directory, after upgrading webrtc.
+[patch.crates-io]
+webrtc-dtls = { path = "vendor/webrtc-dtls" }
