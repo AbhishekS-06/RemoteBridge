@@ -4,6 +4,7 @@ Self-hosted remote desktop. A Rust agent on a MacBook captures the screen,
 encodes it to H.264, and streams it over WebRTC to a plain browser page on
 a phone. No third-party remote desktop service is involved.
 
+[![CI](https://github.com/AbhishekS-06/RemoteBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/AbhishekS-06/RemoteBridge/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/host-Rust-000000?logo=rust)
 ![Go](https://img.shields.io/badge/signaling-Go-00ADD8?logo=go&logoColor=white)
 ![WebRTC](https://img.shields.io/badge/transport-WebRTC-333333?logo=webrtc)
@@ -85,6 +86,7 @@ The diagrams are static images rendered from the Mermaid sources in
 | Signaling server | Go, `gorilla/websocket` | Small relay, also serves the client page |
 | Client | Plain HTML and JavaScript, browser `RTCPeerConnection` | Nothing to install on the phone |
 | NAT traversal (v2) | Public STUN, plus self-hosted coturn (TURN) with short-lived credentials | Direct path when possible, relay when not |
+| CI | GitHub Actions: Go fmt, vet and race-enabled tests on Linux; host build and tests on a macOS 26 runner | The host needs ScreenCaptureKit, which only exists on macOS; the capture crate's Swift code needs the macOS 26 SDK |
 | Deploy (planned) | Docker, GitHub Actions, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
 
 ## Project layout
@@ -106,6 +108,7 @@ RemoteBridge/
   docs/process-log.md  How the project was built: decisions, detours, mistakes
   docs/debugging-log.md  Problems hit, how each was diagnosed, and the fixes
   deploy/              Example configs: coturn, systemd unit, Caddy
+  .github/workflows/ci.yml  CI: Go checks and tests, macOS host build
 ```
 
 ## Running it
