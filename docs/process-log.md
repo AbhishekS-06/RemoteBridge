@@ -159,6 +159,16 @@ so the relay path can be proven instead of assumed.
 
 Details and lessons for each are in `debugging-log.md`.
 
+## CI (Oct 2)
+
+Added `.github/workflows/ci.yml` before v3, so the input work has a safety
+net. Two jobs: the Go server on Linux (gofmt check, `go vet`, `go test
+-race`), and the host on a macOS runner (`brew install ffmpeg`, `cargo
+build` and `cargo test`), because ScreenCaptureKit only exists on macOS.
+A rustfmt check was left out: the host code is not rustfmt-formatted yet.
+Docker, k3s and automatic deploy wait until after v4, when the signaling
+protocol stops changing and a long-lived server exists.
+
 ## Mistakes worth remembering
 
 - Recommending a provider offer from memory without checking it was current.
