@@ -34,6 +34,19 @@
 
     const video = document.getElementById("remote");
     let pc = null;
+    let inputChannel = null;
+    let tapCount = 0;
+    let answerState = "waiting for offer";
+    let render = () => {};
+
+    // Test traffic for the input channel: each tap sends a numbered message
+    // the host prints. Real input events replace this in the next step.
+    video.addEventListener("pointerdown", () => {
+      if (!inputChannel || inputChannel.readyState !== "open") return;
+      tapCount += 1;
+      inputChannel.send("tap " + tapCount);
+      render();
+    });
 
     // Built only once the server's config message arrives, because the ICE
     // servers (including the short-lived TURN credentials) come from it.
@@ -47,16 +60,30 @@
         video.srcObject = event.streams[0];
       };
 
+      // The host creates the "input" channel before its offer, so it arrives
+      // here rather than being created on this side.
+      peer.ondatachannel = (event) => {
+        if (event.channel.label !== "input") return;
+        inputChannel = event.channel;
+        inputChannel.onopen = () => {
+          inputChannel.send("hello from viewer");
+          render();
+        };
+        inputChannel.onclose = render;
+      };
+
       // Small on-screen status so a phone, with no console, still shows why a
       // connection fails: connection/ICE state and the kinds of candidate
       // this side gathered (host, srflx from STUN, relay from TURN).
       const seen = {};
       const statusEl = document.getElementById("status");
-      const render = () => {
+      render = () => {
         statusEl.textContent =
           "connection: " + peer.connectionState + "\n" +
           "ice: " + peer.iceConnectionState + "\n" +
-          "candidates: " + (Object.entries(seen).map(([k, v]) => k + "=" + v).join(" ") || "none") +
+          "answer: " + answerState + "\n" +
+          "candidates: " + (Object.entries(seen).map(([k, v]) => k + "=" + v).join(" ") || "none") + "\n" +
+          "input: " + (inputChannel ? inputChannel.readyState : "none") + " (taps sent: " + tapCount + ")" +
           (forceRelay ? "\nrelay-only mode" : "");
       };
       peer.onicecandidate = (event) => {
@@ -72,15 +99,25 @@
       return peer;
     }
 
-    function waitForIceGatheringComplete(peer) {
+    // Without trickle ICE the answer carries every candidate, so it waits for
+    // gathering. But gathering only completes once every STUN/TURN server has
+    // answered or timed out, and one slow server can push that past ICE's own
+    // ~30 s failure timeout: the phone then fails before the host ever gets
+    // the answer. So send after at most maxMs with whatever has been gathered
+    // (host, srflx and UDP relay candidates arrive within a second or two).
+    function waitForIceGathering(peer, maxMs) {
       if (peer.iceGatheringState === "complete") return Promise.resolve();
       return new Promise((resolve) => {
-        peer.addEventListener("icegatheringstatechange", function check() {
-          if (peer.iceGatheringState === "complete") {
-            peer.removeEventListener("icegatheringstatechange", check);
-            resolve();
-          }
-        });
+        const done = () => {
+          clearTimeout(timer);
+          peer.removeEventListener("icegatheringstatechange", check);
+          resolve();
+        };
+        const check = () => {
+          if (peer.iceGatheringState === "complete") done();
+        };
+        const timer = setTimeout(done, maxMs);
+        peer.addEventListener("icegatheringstatechange", check);
       });
     }
 
@@ -99,11 +136,13 @@
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      // No trickle ICE for v1 (same LAN) -- wait for gathering to finish so
-      // the answer already has every candidate embedded.
-      await waitForIceGatheringComplete(pc);
+      answerState = "gathering";
+      render();
+      await waitForIceGathering(pc, 3000);
 
       ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription.sdp }));
+      answerState = "sent (gathering " + pc.iceGatheringState + ")";
+      render();
     };
   </script>
 </body>

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MIME_TYPE_H264, MediaEngine};
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -92,6 +93,22 @@ pub async fn connect_host(
     peer_connection
         .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await?;
+
+    // Input from the viewer arrives on this data channel. The host creates it
+    // because the host makes the offer: a channel created before the offer is
+    // described in the SDP, so the viewer receives it via ondatachannel and
+    // no renegotiation is needed. Default settings mean ordered and reliable
+    // (SCTP over the same DTLS connection as the video), which input needs:
+    // a lost or reordered "release" would leave a button stuck down.
+    let input_channel = peer_connection.create_data_channel("input", None).await?;
+    input_channel.on_open(Box::new(|| {
+        println!("input channel open");
+        Box::pin(async {})
+    }));
+    input_channel.on_message(Box::new(|msg: DataChannelMessage| {
+        println!("input: {}", String::from_utf8_lossy(&msg.data));
+        Box::pin(async {})
+    }));
 
     // Diagnostics: which kinds of candidate were gathered (host, srflx from
     // STUN, relay from TURN) and how ICE progresses. Only type and protocol
