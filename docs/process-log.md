@@ -172,6 +172,31 @@ SDK the dependencies need, and `apple-metal` needs the macOS 26 SDK
 Docker, k3s and automatic deploy wait until after v4, when the signaling
 protocol stops changing and a long-lived server exists.
 
+## v3: input from the phone (Oct 3, in progress)
+
+Work now happens on feature branches with a PR so CI checks each change
+before `main` (this one: `v3-input`).
+
+1. Data channel first, before any real input. The host creates an `input`
+   channel before it makes the offer, so the channel is in the SDP and the
+   phone receives it through `ondatachannel` with no renegotiation. Default
+   settings (ordered, reliable) because input must not be lost or reordered:
+   a dropped "release" would leave a button held down. The phone sends a
+   hello on open and a numbered message per tap; the host prints them. This
+   proves the path phone to host works, including through TURN, before any
+   mouse control is written.
+2. Oct 5, campus Wi-Fi test (the case that motivated v2). Ports 3478 and 443
+   were open, but the host never got the phone's answer: the viewer waited
+   for ICE gathering to complete, and that outlasted ICE's own timeout.
+   Capped the wait at 3 s; it then connected on campus (debugging log #9).
+   I first guessed a stale host connection; the server log disproved it.
+   Reading the log before theorizing would have been faster.
+3. Oct 6, docs caught up before the first v3 commit: README status, run
+   output and design decisions now describe the input channel and the 3 s
+   answer cap; architecture and connection-setup diagrams show the channel.
+   A separate reverse arrow for input made Mermaid reshuffle the whole
+   architecture layout, so input shares the peer-to-peer edge label instead.
+
 ## Mistakes worth remembering
 
 - Recommending a provider offer from memory without checking it was current.
@@ -201,7 +226,8 @@ protocol stops changing and a long-lived server exists.
 
 ## Still to do
 
-- Campus Wi-Fi with and without `--relay` (cellular passed both, Oct 1-2).
+- Campus Wi-Fi relay-only run (normal mode passed Oct 5).
+- Viewer reload should rejoin without restarting the host.
 - Destroy the test server and rotate the token when finished.
 - v3: input forwarding. v4: pairing and multi-device. v5: native client,
   Windows and Linux hosts.

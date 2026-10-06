@@ -147,6 +147,35 @@ RUST_LOG=webrtc_dtls=debug,webrtc=debug cargo run -- webrtc ...   # library logs
   machine. "Works locally" can mean "my SDK is newer". Compare toolchain
   versions first when CI and local disagree.
 
+### 9. On campus Wi-Fi the host never received the phone's answer
+
+- **Symptom:** Mac on campus Wi-Fi, phone on cellular. The host stopped at
+  `offer sent, waiting for viewer's answer...` with no ICE lines. The phone
+  went `checking` and then `failed`.
+- **Diagnosis:** First suspected the network: `nc -vz` from the Mac to the
+  server on 3478 and 443 both connected, so campus was not blocking TURN.
+  Then suspected a stale host connection holding the server's slot; the
+  server log (`journalctl -u remotebridge-signaling`) ruled that out, since
+  the host connected at 02:03:08 and stayed connected while the viewer
+  joined. The server had the right pair, so the phone was not sending its
+  answer. The viewer waited for ICE gathering to complete before sending
+  (no trickle ICE), and the phone's ICE checks were already running against
+  a host that had no answer and so never replied. ICE gave up at about
+  30 s before gathering finished.
+- **Cause:** Waiting for `iceGatheringState === "complete"` is unbounded:
+  it ends only when every STUN/TURN server has answered or timed out. The
+  long `checking` wait at home on Oct 1 was the same thing, finishing just
+  in time.
+- **Fix:** `client/index.html` sends the answer when gathering completes or
+  after 3 s, whichever comes first, and the status box shows the answer
+  state. Connected on campus after the change.
+- **Detours:** Accidental phone reloads made it look worse. After a reload
+  the session is dead until the host restarts (known limitation), and
+  Safari served a cached copy of the old page after the update.
+- **Lesson:** Read the server log before theorizing about which side is at
+  fault. Any wait in a handshake needs an upper bound shorter than the
+  other side's timeout. Trickle ICE removes this wait entirely.
+
 ## Provider choice (not a bug, but it cost time)
 
 - **Azure for Students:** every small VM size returned

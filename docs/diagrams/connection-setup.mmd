@@ -5,15 +5,16 @@ sequenceDiagram
 
     H->>S: WebSocket connect (role=host, token)
     S->>H: config (STUN and TURN servers,<br/>short-lived TURN credentials)
-    H->>H: create offer, gather ICE candidates
+    H->>H: create "input" data channel,<br/>create offer, gather ICE candidates
     H->>S: offer (SDP with candidates)
     Note over S: stores the pending offer
     V->>S: WebSocket connect (role=viewer, token)
     S->>V: config (STUN and TURN servers,<br/>short-lived TURN credentials)
     S->>V: replay the pending offer
-    V->>V: set remote description,<br/>create answer, gather candidates
+    V->>V: set remote description,<br/>create answer, gather candidates<br/>(at most 3 s)
     V->>S: answer (SDP with candidates)
     Note over S: clears the pending offer
     S->>H: answer
     H-->>V: ICE connectivity checks (direct UDP,<br/>or relayed through coturn if blocked)
     H-->>V: DTLS handshake, then encrypted H.264 over SRTP
+    V-->>H: input data channel opens (viewer to host messages)

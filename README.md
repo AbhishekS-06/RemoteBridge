@@ -9,7 +9,7 @@ a phone. No third-party remote desktop service is involved.
 ![Go](https://img.shields.io/badge/signaling-Go-00ADD8?logo=go&logoColor=white)
 ![WebRTC](https://img.shields.io/badge/transport-WebRTC-333333?logo=webrtc)
 ![Platform](https://img.shields.io/badge/host%20platform-macOS-lightgrey?logo=apple)
-![Status](https://img.shields.io/badge/status-v2%20built%2C%20campus%20test%20pending-blue)
+![Status](https://img.shields.io/badge/status-v3%20in%20progress-blue)
 
 ## Current status
 
@@ -17,8 +17,8 @@ a phone. No third-party remote desktop service is involved.
 |-------|-------|-------|
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
-| v2 | STUN, then self-hosted coturn, so it works across networks | Works phone-on-cellular; campus test pending |
-| v3 | Input forwarding over data channels, touch mapping | Planned |
+| v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
+| v3 | Input forwarding over data channels, touch mapping | In progress: data channel carries test messages |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
@@ -28,11 +28,15 @@ browser (Chrome or Brave) connecting through the VPS directly, and a
 relay-only run that proved the video passes through coturn, and Safari on an
 iPhone on cellular streaming from the Mac on home Wi-Fi, in both normal and
 relay-only mode. On cellular, ICE picked the TURN relay even in normal mode,
-because the carrier's NAT blocked a direct path. The host and the viewer can
-start in either order.
+because the carrier's NAT blocked a direct path. Also verified: the Mac on
+campus Wi-Fi with the phone on cellular. The host and the viewer can start
+in either order. An `input` data channel from the phone to the Mac is open
+and carries test messages (a hello, then one numbered message per tap),
+which the host prints.
 
-**Not yet verified:** the campus Wi-Fi case that motivated v2. Not implemented:
-controlling the Mac from the phone, and more than one viewer.
+**Not yet verified:** relay-only mode on campus Wi-Fi. Not implemented:
+controlling the Mac from the phone (the channel exists, but no real input
+events or injection yet), and more than one viewer.
 
 ## How it works
 
@@ -97,7 +101,8 @@ RemoteBridge/
     src/main.rs          capture handlers, run modes, encode-and-send loop
     src/encoder.rs       H.264 encoder wrapper (YUV420P frames in, Annex B out)
     src/signaling.rs     WebSocket client, Offer and Answer messages
-    src/webrtc_host.rs   peer connection, video track, offer/answer handshake
+    src/webrtc_host.rs   peer connection, video track, input data channel,
+                         offer/answer handshake
     .cargo/config.toml   Swift library path and rpath (Command Line Tools only)
   signaling/           Go relay and static file server for client/
     main.go
@@ -139,7 +144,9 @@ RemoteBridge/
    cargo run -- webrtc
    ```
 
-The host prints `peer connection state: connected` once the viewer answers.
+The host prints `peer connection state: connected` once the viewer answers,
+then `input channel open` and `input: hello from viewer`. Each tap on the
+video prints `input: tap N`.
 Closing the viewer makes the host log `disconnected` and then `failed`. That
 is the normal end of a session.
 
@@ -190,9 +197,16 @@ https://signal.example.com/?token=<secret>
 - **Host is the offerer, and the server holds its offer.** The host sends
   one offer at startup. The relay keeps it until a viewer answers, so start
   order does not matter.
-- **No trickle ICE.** Each side waits for candidate gathering to finish
-  before sending its SDP, so the protocol has two message types instead of
-  three. This costs a short delay and is acceptable for now.
+- **No trickle ICE.** Each side embeds its candidates in the SDP instead of
+  sending them one by one, so the protocol has two message types instead of
+  three. The host waits for gathering to finish. The viewer waits at most
+  3 seconds: on a phone, waiting for gathering to complete could outlast
+  ICE's own ~30 s timeout, so the host got the answer too late (debugging
+  log #9).
+- **The host creates the input data channel.** The host makes the offer,
+  so a channel created before it is already in the SDP and the viewer
+  receives it with no renegotiation. It is ordered and reliable, because a
+  lost or reordered "release" would leave a button held down.
 - **No B-frames, no lookahead.** Remote desktop is latency-sensitive, so
   compression efficiency is traded for lower delay.
 - **Signaling is not part of the media path.** The server can be replaced or
@@ -228,11 +242,15 @@ https://signal.example.com/?token=<secret>
 
 ## Known limitations
 
-- The campus Wi-Fi case has not been tested yet. Networks that block both UDP and TCP on port 3478 would need coturn on
-  port 443, which conflicts with Caddy and is not set up.
+- Networks that block both UDP and TCP on port 3478 would need coturn on
+  port 443, which conflicts with Caddy and is not set up. The campus network
+  tested allows 3478.
+- No trickle ICE: the viewer sends its answer once gathering completes or
+  after 3 seconds, whichever comes first.
 - The shared token is in the page URL, and the test server is a single Vultr
   instance meant to be destroyed after testing (see `docs/deploy.md`).
 - Reloading the viewer after it has connected requires restarting the host.
-- View only: no keyboard or mouse input.
+- View only: the input channel carries test messages, not keyboard or mouse
+  events.
 - One viewer at a time, main display only, macOS host only.
 - No audio and no automatic reconnect.
