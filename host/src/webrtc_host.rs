@@ -26,6 +26,7 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
+use crate::input::{InputEvent, InputSender};
 use crate::signaling::{BoxError, IceServerConfig, SignalMessage, SignalingClient};
 
 /// The one video track every session sends. A track can be bound to
@@ -54,6 +55,7 @@ pub async fn run_sessions(
     mut signaling: SignalingClient,
     force_relay: bool,
     video_track: Arc<TrackLocalStaticSample>,
+    input: InputSender,
 ) -> Result<(), BoxError> {
     // The server sends its ICE servers first, before anything else. Wait for
     // them here because every peer connection needs them at construction.
@@ -83,8 +85,15 @@ pub async fn run_sessions(
                 }
                 session += 1;
                 println!("viewer joined, starting session {session}");
-                match start_session(&mut signaling, &server_ice, force_relay, &video_track, session)
-                    .await
+                match start_session(
+                    &mut signaling,
+                    &server_ice,
+                    force_relay,
+                    &video_track,
+                    &input,
+                    session,
+                )
+                .await
                 {
                     Ok(pc) => current = Some(pc),
                     Err(e) => println!("session {session} failed to start: {e}"),
@@ -118,6 +127,7 @@ async fn start_session(
     server_ice: &[IceServerConfig],
     force_relay: bool,
     video_track: &Arc<TrackLocalStaticSample>,
+    input: &InputSender,
     session: u32,
 ) -> Result<Arc<RTCPeerConnection>, BoxError> {
     let mut media_engine = MediaEngine::default();
@@ -177,8 +187,23 @@ async fn start_session(
         println!("input channel open");
         Box::pin(async {})
     }));
-    input_channel.on_message(Box::new(|msg: DataChannelMessage| {
-        println!("input: {}", String::from_utf8_lossy(&msg.data));
+    // Each message is one pointer event as JSON (see input.rs). It is handed
+    // to the injector thread rather than injected here, so this callback
+    // never waits on the OS. A send only fails when input is disabled.
+    let to_injector = input.clone();
+    input_channel.on_message(Box::new(move |msg: DataChannelMessage| {
+        match serde_json::from_slice::<InputEvent>(&msg.data) {
+            Ok(event) => {
+                let _ = to_injector.send(event);
+            }
+            Err(e) => println!("bad input message: {e}"),
+        }
+        Box::pin(async {})
+    }));
+    let to_injector = input.clone();
+    input_channel.on_close(Box::new(move || {
+        println!("input channel closed");
+        let _ = to_injector.send(InputEvent::Reset);
         Box::pin(async {})
     }));
 

@@ -10,6 +10,7 @@ use screencapturekit::prelude::*;
 use webrtc::media::Sample;
 
 mod encoder;
+mod input;
 mod signaling;
 mod webrtc_host;
 
@@ -288,8 +289,13 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // but nobody new can join until the host restarts.
     let video_track = webrtc_host::new_video_track();
     let session_track = Arc::clone(&video_track);
+    // Viewer touches arrive as fractions of this frame size; the injector
+    // maps them back onto the screen.
+    let input = input::start_injector(CAPTURE_WIDTH, CAPTURE_HEIGHT);
     tokio::spawn(async move {
-        if let Err(e) = webrtc_host::run_sessions(signaling, force_relay, session_track).await {
+        if let Err(e) =
+            webrtc_host::run_sessions(signaling, force_relay, session_track, input).await
+        {
             println!("signaling stopped: {e} (restart the host to accept new viewers)");
         }
     });

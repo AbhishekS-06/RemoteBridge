@@ -117,7 +117,7 @@ server and client must stay side by side, because the server serves
 
 ```
 ssh <user>@<server-ip> mkdir -p remotebridge
-rsync -av signaling client deploy <user>@<server-ip>:remotebridge/
+rsync -av --exclude remotebridge-signaling signaling client deploy <user>@<server-ip>:remotebridge/
 ```
 
 On the server, build it and install the service:
@@ -145,10 +145,14 @@ relay configured", the TURN variables are not reaching the process.
 To update a running server after changing `signaling/` or `client/`, copy
 again from the laptop, then rebuild and restart on the server. The host and
 the server speak the same protocol, so update the server whenever the host
-changes how it signals:
+changes how it signals. The `--exclude` keeps a binary built on the Mac
+(macOS, arm64) from overwriting the server's Linux one. Run `go build` on
+the server, not the laptop, and check the host prints `viewer joined` after
+the restart: an old binary still accepts connections, it just never sends
+that message.
 
 ```
-rsync -av signaling client <user>@<server-ip>:remotebridge/
+rsync -av --exclude remotebridge-signaling signaling client <user>@<server-ip>:remotebridge/
 ssh <user>@<server-ip>
 cd ~/remotebridge/signaling && go build -o remotebridge-signaling .
 sudo systemctl restart remotebridge-signaling

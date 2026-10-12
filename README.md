@@ -18,7 +18,7 @@ a phone. No third-party remote desktop service is involved.
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
-| v3 | Input forwarding over data channels, touch mapping | In progress: data channel carries test messages (verified locally) |
+| v3 | Input forwarding over data channels, touch mapping | In progress: touch to mouse (click, drag) works from the iPhone through the VPS |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
@@ -31,14 +31,16 @@ relay-only mode. On cellular, ICE picked the TURN relay even in normal mode,
 because the carrier's NAT blocked a direct path. Also verified: the Mac on
 campus Wi-Fi with the phone on cellular. The host and the viewer can start
 in either order, and reloading the viewer (or restarting the host) starts a
-new session without restarting anything else. An `input` data channel from the viewer to the Mac is open
-and carries test messages (a hello, then one numbered message per tap),
-which the host prints; verified so far with a browser on the Mac itself.
+new session without restarting anything else. An `input` data channel
+from the viewer to the Mac carried test messages in a run with a browser on
+the Mac itself. Those test messages have since been replaced by real touch
+events (one finger as the left mouse button); clicking and dragging work
+from a browser on the Mac itself and from Safari on the iPhone through the
+VPS. Touch works but is awkward on a phone screen.
 
-**Not yet verified:** relay-only mode on campus Wi-Fi, and the input
-channel from the iPhone or through the TURN relay. Not implemented:
-controlling the Mac from the phone (the channel exists, but no real input
-events or injection yet), and more than one viewer.
+**Not yet verified:** relay-only mode on campus Wi-Fi, touch control
+through the TURN relay, and reloading the viewer on the iPhone.
+Not implemented: right-click, scrolling, keyboard, and more than one viewer.
 
 ## How it works
 
@@ -127,7 +129,10 @@ RemoteBridge/
 
 ### Prerequisites
 
-- macOS with Screen Recording permission granted to your terminal app
+- macOS with Screen Recording and Accessibility permission granted to your
+  terminal app. Accessibility is what lets the host move the mouse and
+  click; without it the stream still works and the host prints
+  `input disabled`.
 - Rust toolchain, Go 1.22 or newer
 - FFmpeg libraries with libx264 available to `ffmpeg-next`
 - Xcode Command Line Tools. `host/.cargo/config.toml` adds the Swift library
@@ -151,9 +156,11 @@ RemoteBridge/
    cargo run -- webrtc
    ```
 
-The host prints `peer connection state: connected` once the viewer answers,
-then `input channel open` and `input: hello from viewer`. Each tap on the
-video prints `input: tap N`.
+At startup the host prints `input ready, display WxH points` (the Mac's
+screen size in points). It prints `peer connection state: connected` once
+the viewer answers, then `input channel open`. Touching the video moves the
+Mac's pointer there and holds the left button down: a tap clicks, a slide
+drags. The viewer's status box counts the events sent.
 Closing the viewer makes the host log `disconnected` and then `failed`. That
 is the normal end of a session. Reloading the viewer prints
 `viewer joined, starting session N` and the video comes back within a
@@ -218,6 +225,18 @@ https://signal.example.com/?token=<secret>
   so a channel created before it is already in the SDP and the viewer
   receives it with no renegotiation. It is ordered and reliable, because a
   lost or reordered "release" would leave a button held down.
+- **Touches are sent as fractions of the video frame.** The viewer sends
+  `{"type":"down","x":0.5,"y":0.25}` with x and y from 0 to 1, so it never
+  needs the Mac's screen size. Two letterboxes are undone on the way: the
+  page measures against the area the video is drawn in (`object-fit:
+  contain` adds bars on the phone), and the host removes the black bars
+  ScreenCaptureKit adds when it fits a 16:10 screen into the 16:9 frame.
+  The mapping has unit tests (`host/src/input.rs`).
+- **Injection runs on its own thread.** `enigo` (CGEvent underneath on
+  macOS) is driven by one thread that owns it. The data channel callback
+  only parses JSON and forwards the event, so it never blocks on the OS.
+  When a channel closes the host releases the button, so a viewer that
+  disconnects mid-drag cannot leave it held.
 - **No B-frames, no lookahead.** Remote desktop is latency-sensitive, so
   compression efficiency is traded for lower delay.
 - **Signaling is not part of the media path.** The server can be replaced or
@@ -263,7 +282,11 @@ https://signal.example.com/?token=<secret>
 - If the signaling server restarts, both sides must be restarted: neither
   reconnects its WebSocket.
 - The host captures and encodes even when no viewer is connected.
-- View only: the input channel carries test messages, not keyboard or mouse
-  events.
+- Input is one finger as the left mouse button: no right-click,
+  scrolling, keyboard, or trackpad-style relative movement yet. Small
+  targets are hard to hit on a phone screen.
+- The viewer page shows "connecting to signaling..." until the first offer
+  arrives, even when its WebSocket is connected and only the host is
+  missing.
 - One viewer at a time, main display only, macOS host only.
 - No audio and no automatic reconnect.
