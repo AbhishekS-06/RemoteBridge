@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 
@@ -275,9 +276,23 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         || std::env::var("REMOTEBRIDGE_FORCE_RELAY").is_ok_and(|v| v == "1");
 
     println!("connecting to signaling server at {server}");
-    let mut signaling = signaling::SignalingClient::connect(&url).await?;
-    let (_peer_connection, video_track) =
-        webrtc_host::connect_host(&mut signaling, force_relay).await?;
+    // `as` drops the Send + Sync markers; `?` alone can't, because there is
+    // no From conversion between the two boxed error types.
+    let signaling = signaling::SignalingClient::connect(&url)
+        .await
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
+
+    // Signaling runs as its own task so a viewer can join (or reload) at any
+    // time while the loop below keeps capturing. The two share only the
+    // video track. If signaling drops, a connected viewer keeps its stream,
+    // but nobody new can join until the host restarts.
+    let video_track = webrtc_host::new_video_track();
+    let session_track = Arc::clone(&video_track);
+    tokio::spawn(async move {
+        if let Err(e) = webrtc_host::run_sessions(signaling, force_relay, session_track).await {
+            println!("signaling stopped: {e} (restart the host to accept new viewers)");
+        }
+    });
 
     let config = SCStreamConfiguration::new()
         .with_width(CAPTURE_WIDTH)
@@ -302,6 +317,7 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("streaming, ctrl-c to stop");
     let mut frame_num: i64 = 0;
+    let mut write_failing = false;
     while let Some(raw) = rx.recv().await {
         let src_frame = bgra_frame(&raw);
         let mut yuv_frame = ffmpeg::frame::Video::empty();
@@ -312,13 +328,24 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let mut packet = Vec::new();
         h264_encoder.encode(&yuv_frame, &mut packet)?;
         if !packet.is_empty() {
-            video_track
+            // A write fails when a viewer's connection has died but not yet
+            // been replaced. That is no reason to stop the host, which must
+            // stay up for the next viewer, so report it once and carry on.
+            let result = video_track
                 .write_sample(&Sample {
                     data: packet.into(),
                     duration: Duration::from_secs_f64(1.0 / CAPTURE_FILE_FPS as f64),
                     ..Default::default()
                 })
-                .await?;
+                .await;
+            match result {
+                Ok(()) => write_failing = false,
+                Err(e) if !write_failing => {
+                    println!("video write failed: {e}");
+                    write_failing = true;
+                }
+                Err(_) => {}
+            }
         }
     }
 

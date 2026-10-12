@@ -3,6 +3,10 @@
 //! signaling server. No trickle ICE (see signaling.rs) -- for v1's
 //! same-LAN setup, waiting for gathering to finish before sending each SDP
 //! keeps the protocol to two message types instead of three.
+//!
+//! Every time a viewer joins (including a page reload), the host starts a
+//! new session: a fresh peer connection and a fresh offer. The video track
+//! outlives sessions, so the capture loop never has to know about them.
 
 use std::sync::Arc;
 
@@ -22,24 +26,100 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
-use crate::signaling::{SignalMessage, SignalingClient};
+use crate::signaling::{BoxError, IceServerConfig, SignalMessage, SignalingClient};
 
+/// The one video track every session sends. A track can be bound to
+/// several peer connections and unbinds itself when one closes, so the
+/// capture loop writes here forever and whichever viewer is connected gets
+/// the frames. Before the first viewer, writes go nowhere.
+pub fn new_video_track() -> Arc<TrackLocalStaticSample> {
+    Arc::new(TrackLocalStaticSample::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_H264.to_owned(),
+            ..Default::default()
+        },
+        "video".to_owned(),
+        "remotebridge".to_owned(),
+    ))
+}
+
+/// Runs for the life of the host: waits for viewers and gives each one a
+/// fresh session. Returns only when the signaling connection fails.
+///
 /// `force_relay` restricts the connection to TURN-relayed candidates only.
 /// It exists to prove the relay path works: with it on, a stream can only
 /// succeed by going through coturn, so a direct connection can't mask a
 /// broken relay.
-pub async fn connect_host(
-    signaling: &mut SignalingClient,
+pub async fn run_sessions(
+    mut signaling: SignalingClient,
     force_relay: bool,
-) -> Result<(Arc<RTCPeerConnection>, Arc<TrackLocalStaticSample>), Box<dyn std::error::Error>> {
+    video_track: Arc<TrackLocalStaticSample>,
+) -> Result<(), BoxError> {
     // The server sends its ICE servers first, before anything else. Wait for
-    // them here because the peer connection needs them at construction time.
+    // them here because every peer connection needs them at construction.
     let server_ice = loop {
         if let SignalMessage::Config { ice_servers } = signaling.recv().await? {
             break ice_servers;
         }
     };
 
+    // Each offer carries a session number and the viewer echoes it in its
+    // answer. If a viewer reloads twice quickly, the host can be holding a
+    // newer offer when the answer to an older one arrives; the number is how
+    // that stale answer is recognised and dropped instead of being applied
+    // to the wrong peer connection.
+    let mut session: u32 = 0;
+    let mut current: Option<Arc<RTCPeerConnection>> = None;
+    println!("waiting for a viewer...");
+    loop {
+        match signaling.recv().await? {
+            SignalMessage::ViewerJoined => {
+                // The old viewer is gone (the server keeps one viewer), so
+                // close its connection now instead of waiting ~30 s for ICE
+                // to time out. Closing also unbinds the video track and
+                // releases the TURN allocation.
+                if let Some(old) = current.take() {
+                    let _ = old.close().await;
+                }
+                session += 1;
+                println!("viewer joined, starting session {session}");
+                match start_session(&mut signaling, &server_ice, force_relay, &video_track, session)
+                    .await
+                {
+                    Ok(pc) => current = Some(pc),
+                    Err(e) => println!("session {session} failed to start: {e}"),
+                }
+            }
+            SignalMessage::Answer { sdp, session: answered } if answered == session => {
+                let Some(pc) = &current else { continue };
+                let result = match RTCSessionDescription::answer(sdp) {
+                    Ok(answer) => pc.set_remote_description(answer).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = result {
+                    println!("session {session}: bad answer: {e}");
+                }
+            }
+            SignalMessage::Answer { session: answered, .. } => {
+                println!("ignoring answer for old session {answered}");
+            }
+            // Config was already consumed above, and offers only go from
+            // host to viewer, so neither is expected here.
+            SignalMessage::Config { .. } | SignalMessage::Offer { .. } => {}
+        }
+    }
+}
+
+/// Builds one session's peer connection and sends its offer. The answer is
+/// not awaited here: it arrives later through `run_sessions`, which may see
+/// another viewer join first.
+async fn start_session(
+    signaling: &mut SignalingClient,
+    server_ice: &[IceServerConfig],
+    force_relay: bool,
+    video_track: &Arc<TrackLocalStaticSample>,
+    session: u32,
+) -> Result<Arc<RTCPeerConnection>, BoxError> {
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs()?;
 
@@ -61,10 +141,10 @@ pub async fn connect_host(
         urls: vec!["stun:stun.l.google.com:19302".to_owned()],
         ..Default::default()
     }];
-    ice_servers.extend(server_ice.into_iter().map(|server| RTCIceServer {
-        urls: server.urls,
-        username: server.username.unwrap_or_default(),
-        credential: server.credential.unwrap_or_default(),
+    ice_servers.extend(server_ice.iter().map(|server| RTCIceServer {
+        urls: server.urls.clone(),
+        username: server.username.clone().unwrap_or_default(),
+        credential: server.credential.clone().unwrap_or_default(),
         // webrtc-rs rejects a turn: URL unless this is explicitly Password;
         // the default (Unspecified) fails with ErrTurnCredentials before any
         // network traffic. Browsers assume Password, so the page needs no
@@ -82,16 +162,8 @@ pub async fn connect_host(
     };
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
 
-    let video_track = Arc::new(TrackLocalStaticSample::new(
-        RTCRtpCodecCapability {
-            mime_type: MIME_TYPE_H264.to_owned(),
-            ..Default::default()
-        },
-        "video".to_owned(),
-        "remotebridge".to_owned(),
-    ));
     peer_connection
-        .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
+        .add_track(Arc::clone(video_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await?;
 
     // Input from the viewer arrives on this data channel. The host creates it
@@ -166,21 +238,12 @@ pub async fn connect_host(
         .await
         .ok_or("no local description after ICE gathering completed")?;
     signaling
-        .send(&SignalMessage::Offer { sdp: local_desc.sdp })
+        .send(&SignalMessage::Offer {
+            sdp: local_desc.sdp,
+            session,
+        })
         .await?;
-
     println!("offer sent, waiting for viewer's answer...");
-    let answer_sdp = loop {
-        match signaling.recv().await? {
-            SignalMessage::Answer { sdp } => break sdp,
-            // Config was already consumed above; anything else here is
-            // unexpected but harmless, so keep waiting for the answer.
-            SignalMessage::Config { .. } | SignalMessage::Offer { .. } => continue,
-        }
-    };
-    peer_connection
-        .set_remote_description(RTCSessionDescription::answer(answer_sdp)?)
-        .await?;
 
-    Ok((peer_connection, video_track))
+    Ok(peer_connection)
 }

@@ -1,0 +1,7 @@
+stateDiagram-v2
+    direction TB
+    [*] --> Waiting: config received
+    Waiting --> Offered: viewer-joined
+    Offered --> Streaming: answer for this session
+    Streaming --> Offered: viewer-joined (reload)
+    Offered --> Offered: viewer-joined again

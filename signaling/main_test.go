@@ -178,3 +178,72 @@ func TestTurnCredentialMatchesCoturnScheme(t *testing.T) {
 		t.Errorf("urls %v, want %v", s.URLs, wantURLs)
 	}
 }
+
+// connect opens a WebSocket that stays open, unlike dial, so the test can
+// keep reading from it.
+func connect(t *testing.T, srv *httptest.Server, query string) *websocket.Conn {
+	t.Helper()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?" + query
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+// nextType reads one message and returns its "type" field.
+func nextType(t *testing.T, conn *websocket.Conn) string {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Type
+}
+
+// The host must hear about every viewer, whichever side connects first,
+// and again when the viewer reloads, so it can start a fresh session.
+func TestHostToldWhenViewerJoins(t *testing.T) {
+	t.Run("host first, then viewer, then reload", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc((&hub{}).handleWS))
+		defer srv.Close()
+
+		host := connect(t, srv, "role=host")
+		if got := nextType(t, host); got != "config" {
+			t.Fatalf("host first message %q, want config", got)
+		}
+		viewer := connect(t, srv, "role=viewer")
+		if got := nextType(t, host); got != "viewer-joined" {
+			t.Fatalf("after viewer connected, host got %q, want viewer-joined", got)
+		}
+		viewer.Close()
+		connect(t, srv, "role=viewer")
+		if got := nextType(t, host); got != "viewer-joined" {
+			t.Fatalf("after reload, host got %q, want viewer-joined", got)
+		}
+	})
+
+	t.Run("viewer first, then host", func(t *testing.T) {
+		h := &hub{}
+		srv := httptest.NewServer(http.HandlerFunc(h.handleWS))
+		defer srv.Close()
+
+		viewer := connect(t, srv, "role=viewer")
+		nextType(t, viewer) // config; once it arrives the viewer is registered
+		host := connect(t, srv, "role=host")
+		if got := nextType(t, host); got != "config" {
+			t.Fatalf("host first message %q, want config", got)
+		}
+		if got := nextType(t, host); got != "viewer-joined" {
+			t.Fatalf("host second message %q, want viewer-joined", got)
+		}
+	})
+}

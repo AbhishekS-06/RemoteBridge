@@ -33,6 +33,7 @@
       wsProtocol + "//" + location.host + "/ws?role=viewer&token=" + encodeURIComponent(token);
 
     const video = document.getElementById("remote");
+    let iceServers = null;
     let pc = null;
     let inputChannel = null;
     let tapCount = 0;
@@ -48,9 +49,10 @@
       render();
     });
 
-    // Built only once the server's config message arrives, because the ICE
-    // servers (including the short-lived TURN credentials) come from it.
-    // Public STUN is listed here too, same as the host (webrtc_host.rs).
+    // Built fresh for every offer. The ICE servers (including the
+    // short-lived TURN credentials) come from the server's config message,
+    // which always arrives before any offer. Public STUN is listed here too,
+    // same as the host (webrtc_host.rs).
     function createPeerConnection(serverIceServers) {
       const peer = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }, ...serverIceServers],
@@ -125,23 +127,35 @@
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
 
-      // The server always sends this first, so pc exists before any offer.
+      // The server always sends this first, before any offer.
       if (msg.type === "config") {
-        pc = createPeerConnection(msg.ice_servers || []);
+        iceServers = msg.ice_servers || [];
         return;
       }
-      if (msg.type !== "offer" || !pc) return;
+      if (msg.type !== "offer" || !iceServers) return;
 
-      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      // Every offer starts a new session on the host, with its own peer
+      // connection there, so this side starts over too. A second offer can
+      // arrive while this one is still gathering (the host restarted the
+      // session); checking peer === pc after each wait drops the stale one.
+      if (pc) pc.close();
+      inputChannel = null;
+      const peer = createPeerConnection(iceServers);
+      pc = peer;
+
+      await peer.setRemoteDescription({ type: "offer", sdp: msg.sdp });
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
 
       answerState = "gathering";
       render();
-      await waitForIceGathering(pc, 3000);
+      await waitForIceGathering(peer, 3000);
+      if (peer !== pc) return;
 
-      ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription.sdp }));
-      answerState = "sent (gathering " + pc.iceGatheringState + ")";
+      // session echoes the offer's, so the host can tell this answer apart
+      // from one meant for an offer it has already replaced.
+      ws.send(JSON.stringify({ type: "answer", sdp: peer.localDescription.sdp, session: msg.session }));
+      answerState = "sent (gathering " + peer.iceGatheringState + ")";
       render();
     };
   </script>

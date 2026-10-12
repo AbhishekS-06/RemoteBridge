@@ -18,7 +18,7 @@ a phone. No third-party remote desktop service is involved.
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
-| v3 | Input forwarding over data channels, touch mapping | In progress: data channel carries test messages |
+| v3 | Input forwarding over data channels, touch mapping | In progress: data channel carries test messages (verified locally) |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
@@ -30,11 +30,13 @@ iPhone on cellular streaming from the Mac on home Wi-Fi, in both normal and
 relay-only mode. On cellular, ICE picked the TURN relay even in normal mode,
 because the carrier's NAT blocked a direct path. Also verified: the Mac on
 campus Wi-Fi with the phone on cellular. The host and the viewer can start
-in either order. An `input` data channel from the phone to the Mac is open
+in either order, and reloading the viewer (or restarting the host) starts a
+new session without restarting anything else. An `input` data channel from the viewer to the Mac is open
 and carries test messages (a hello, then one numbered message per tap),
-which the host prints.
+which the host prints; verified so far with a browser on the Mac itself.
 
-**Not yet verified:** relay-only mode on campus Wi-Fi. Not implemented:
+**Not yet verified:** relay-only mode on campus Wi-Fi, and the input
+channel from the iPhone or through the TURN relay. Not implemented:
 controlling the Mac from the phone (the channel exists, but no real input
 events or injection yet), and more than one viewer.
 
@@ -63,15 +65,20 @@ The signaling server only carries these two messages.
 
 ![Connection setup: offer and answer exchange through the signaling server](docs/diagrams/connection-setup.png)
 
-If the viewer connects first, the offer is relayed live instead of replayed.
-Either order ends the same way.
+The server sends `viewer-joined` to the host whenever both sides are
+connected, whichever arrived second, so start order does not matter.
 
-### Signaling server behavior
+### Host sessions (reload)
 
-The relay is deliberately thin. It reads one field, `type`, so it knows when
-an offer is waiting. All other content passes through as opaque bytes.
+Each `viewer-joined` starts a new session on the host: it closes the old
+peer connection, builds a new one, and sends an offer numbered with the
+session. The viewer echoes that number in its answer, and the host ignores
+an answer for an older session (possible when the page is reloaded twice
+quickly). One video track outlives all sessions, so the capture loop keeps
+running and whichever viewer is connected receives it. The signaling server
+only relays offers and answers as opaque bytes.
 
-![Signaling server offer lifecycle state diagram](docs/diagrams/offer-lifecycle.png)
+![Host session lifecycle state diagram](docs/diagrams/session-lifecycle.png)
 
 The diagrams are static images rendered from the Mermaid sources in
 `docs/diagrams/`. After editing a `.mmd` file, regenerate the PNGs with
@@ -148,7 +155,9 @@ The host prints `peer connection state: connected` once the viewer answers,
 then `input channel open` and `input: hello from viewer`. Each tap on the
 video prints `input: tap N`.
 Closing the viewer makes the host log `disconnected` and then `failed`. That
-is the normal end of a session.
+is the normal end of a session. Reloading the viewer prints
+`viewer joined, starting session N` and the video comes back within a
+couple of seconds.
 
 ### Host run modes
 
@@ -194,9 +203,11 @@ https://signal.example.com/?token=<secret>
 
 ## Design decisions
 
-- **Host is the offerer, and the server holds its offer.** The host sends
-  one offer at startup. The relay keeps it until a viewer answers, so start
-  order does not matter.
+- **Host is the offerer, one offer per viewer.** The server tells the host
+  when a viewer joins, and the host answers with a fresh peer connection
+  and offer. This replaced an earlier design where the server stored the
+  host's single startup offer: that offer could only be used once, so a
+  reloaded viewer got nothing until the host restarted.
 - **No trickle ICE.** Each side embeds its candidates in the SDP instead of
   sending them one by one, so the protocol has two message types instead of
   three. The host waits for gathering to finish. The viewer waits at most
@@ -249,7 +260,9 @@ https://signal.example.com/?token=<secret>
   after 3 seconds, whichever comes first.
 - The shared token is in the page URL, and the test server is a single Vultr
   instance meant to be destroyed after testing (see `docs/deploy.md`).
-- Reloading the viewer after it has connected requires restarting the host.
+- If the signaling server restarts, both sides must be restarted: neither
+  reconnects its WebSocket.
+- The host captures and encodes even when no viewer is connected.
 - View only: the input channel carries test messages, not keyboard or mouse
   events.
 - One viewer at a time, main display only, macOS host only.

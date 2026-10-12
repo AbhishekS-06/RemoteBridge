@@ -142,6 +142,18 @@ sudo systemctl status remotebridge-signaling
 The log should say `TURN relay offered at <ip>:3478`. If it says "no TURN
 relay configured", the TURN variables are not reaching the process.
 
+To update a running server after changing `signaling/` or `client/`, copy
+again from the laptop, then rebuild and restart on the server. The host and
+the server speak the same protocol, so update the server whenever the host
+changes how it signals:
+
+```
+rsync -av signaling client <user>@<server-ip>:remotebridge/
+ssh <user>@<server-ip>
+cd ~/remotebridge/signaling && go build -o remotebridge-signaling .
+sudo systemctl restart remotebridge-signaling
+```
+
 ## 8. Configure Caddy
 
 Copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, replace the domain
