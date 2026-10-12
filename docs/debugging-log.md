@@ -176,6 +176,33 @@ RUST_LOG=webrtc_dtls=debug,webrtc=debug cargo run -- webrtc ...   # library logs
   fault. Any wait in a handshake needs an upper bound shorter than the
   other side's timeout. Trickle ICE removes this wait entirely.
 
+### 10. iPhone stuck at "connecting to signaling..." after updating the VPS
+
+- **Symptom:** After copying the reload and touch work to the VPS and
+  restarting the service, the phone's page never got past "connecting to
+  signaling...". The host printed `waiting for a viewer...` and nothing
+  more.
+- **Diagnosis:** The page's status text is misleading: it stays at
+  "connecting to signaling..." until an offer arrives, whatever the
+  WebSocket did. The server log settled it: both `host connected` and
+  `viewer connected` appeared and no token was rejected, so signaling
+  worked. The host never printed `viewer joined, starting session N`, and
+  the current server always sends `viewer-joined` when both slots are
+  full, so the running process could not be the new code. On the server,
+  `grep viewer-joined main.go`, `go build` (exit 0) and `systemctl cat`
+  (ExecStart path) were all correct, and the binary's timestamp was from
+  that moment, after the 05:55 restart.
+- **Cause:** The service had been restarted on an old binary: the rebuild
+  had not happened (or not finished) before the restart. The old server
+  also sends `config` and logs the same connect lines, so nothing else
+  looked wrong.
+- **Fix:** Rebuild, then `systemctl restart remotebridge-signaling` again.
+  The host printed `viewer joined`, video played and touch worked.
+- **Lesson:** After a deploy, prove the new code is the one running (a
+  behavior only it has, or the binary's timestamp against the restart
+  time), not just that the service is up. Status text in a UI should
+  report the layer it actually observed.
+
 ## Provider choice (not a bug, but it cost time)
 
 - **Azure for Students:** every small VM size returned

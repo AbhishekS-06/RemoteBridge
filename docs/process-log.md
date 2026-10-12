@@ -224,6 +224,43 @@ before `main` (this one: `v3-input`).
    whose answer has no `session` field, so the host's parser skipped it
    without a word. Old page plus new host fails silently, which is worth
    remembering when the VPS still serves the old page.
+7. Oct 12, PR conflicts after a squash merge. The input channel commit was
+   merged to `main` as PR #2 with "Squash and merge", which creates a new
+   commit (`e746044`) with identical contents but a different hash. The
+   reload work had been committed on top of the original commit on
+   `v3-input`, so the next PR showed conflicts in six files: git saw two
+   unrelated edits to the same lines, not the same change twice. No content
+   actually differed (`git diff 9992836 e746044` was empty). Fixed with
+   `git rebase --onto origin/main 9992836 v3-input` and a
+   `--force-with-lease` push, which replayed only the reload commit onto
+   `main`; the open PR updated in place. Lesson: after a squash merge,
+   branch the next work from the updated `main`, or use merge commits.
+8. Oct 12, real touch input (branch `v3-input-protocol`). The test taps are
+   replaced by pointer events: `{"type":"down"|"move"|"up","x","y"}` with
+   x and y as fractions (0..1) of the video frame. One finger is the left
+   mouse button, so a tap clicks and a slide drags. Two letterboxes have to
+   be undone: the page measures the touch against the area the video is
+   drawn in (`object-fit: contain`), and the host removes the side bars
+   ScreenCaptureKit adds when it fits the 1512x982-point screen into
+   1280x720 (visible in the old `frame.png`). Without the second step a tap
+   lands up to ~86 frame pixels off near the screen edges. Injection uses
+   `enigo` on one dedicated thread; the data channel callback only parses
+   and forwards. When a channel closes the host releases the button, so a
+   viewer that drops mid-drag cannot leave it held. Unit tests cover the
+   mapping (centre, edges, bars) and JSON parsing. Host builds, tests pass,
+   page JS parses; not yet run.
+9. Oct 12, touch test on the Mac browser (localhost) worked. The first try
+   failed with `ConnectionRefused` because the signaling server was not
+   running; the host connects to it before anything else.
+10. Oct 12, touch test on the iPhone through the VPS (normal mode) worked:
+    tapping and dragging moved and clicked the Mac's cursor. It is awkward
+    to use (one finger as an absolute mouse on a small screen), left for
+    later. Getting there took one detour: the VPS had to be updated because
+    the reload work added a server message (`viewer-joined`), and the first
+    attempt left the old binary running, so the phone sat at "connecting to
+    signaling..." (debugging log #10). Input itself never touches the
+    signaling server; it rides the data channel, so for touch alone only
+    the page needed copying.
 
 ## Mistakes worth remembering
 
@@ -241,6 +278,14 @@ before `main` (this one: `v3-input`).
   the commit with `git reset HEAD~1` before it was pushed.
 - Long instruction blocks when the reader was mid-way through configuring a
   cloud console. Smaller steps, one at a time, work better.
+- Starting the touch-input code (adding a dependency, writing files) while
+  the user was still on `main`, before they had made a branch. Nothing was
+  committed, and `git switch -c` carried the changes to the new branch, but
+  branching is the user's step and comes first.
+- The viewer page's status text says "connecting to signaling..." until an
+  offer arrives, and the page has no WebSocket open/close handlers. So a
+  connected page waiting for the host looks exactly like one that never
+  reached the server, which pointed the first guess at the wrong layer.
 
 ## What I would do differently
 
@@ -255,7 +300,9 @@ before `main` (this one: `v3-input`).
 ## Still to do
 
 - Campus Wi-Fi relay-only run (normal mode passed Oct 5).
-- Viewer reload should rejoin without restarting the host.
+- Touch on the iPhone through the TURN relay (relay-only), and the reload
+  test on the iPhone.
+- Make touch easier to use on the phone; then right-click, scroll, keyboard.
 - Destroy the test server and rotate the token when finished.
 - v3: input forwarding. v4: pairing and multi-device. v5: native client,
   Windows and Linux hosts.

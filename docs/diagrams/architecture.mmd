@@ -5,7 +5,9 @@ flowchart LR
         SCALE["swscale<br/>BGRA to YUV420P"]
         ENC["libx264<br/>H.264, zerolatency"]
         TRACK["webrtc-rs<br/>video track,<br/>input channel"]
+        INJ["enigo injector<br/>touch to mouse"]
         CAP --> SCALE --> ENC --> TRACK
+        TRACK --> INJ
     end
 
     subgraph Server["Signaling server (Go)"]
