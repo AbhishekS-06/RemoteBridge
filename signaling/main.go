@@ -37,13 +37,13 @@ type hub struct {
 	mu     sync.Mutex
 	host   *websocket.Conn
 	viewer *websocket.Conn
-
-	// The host's offer, held until a viewer answers it. The host sends its
-	// offer once right after connecting, so without this a viewer that shows
-	// up later (or a phone on a slow network) would never see it and the
-	// host would wait forever.
-	pendingOffer []byte
 }
+
+// Sent to the host whenever a viewer is ready for an offer: when a viewer
+// connects while the host is up, or when the host connects while a viewer
+// is waiting. The host answers it with a fresh peer connection and offer, so
+// connect order doesn't matter and a reloaded page gets a working session.
+var viewerJoined = []byte(`{"type":"viewer-joined"}`)
 
 var upgrader = websocket.Upgrader{
 	// Origin is not checked. The shared token (see authorized) is the gate:
@@ -105,14 +105,17 @@ func (h *hub) configMessage() []byte {
 	return msg
 }
 
-// register fills the role's slot. A viewer that arrives while an offer is
-// waiting gets it immediately, so connect order between host and viewer
-// no longer matters. Runs under the lock so the replay can't interleave
-// with a live relay write to the same connection (gorilla/websocket allows
-// only one concurrent writer per connection).
+// register fills the role's slot and, if both sides are now present, tells
+// the host a viewer is waiting. Runs under the lock so these writes can't
+// interleave with a live relay write to the same connection
+// (gorilla/websocket allows only one concurrent writer per connection).
 //
-// The config message goes out first, before any offer replay, so a viewer
-// always knows its ICE servers before it sees the offer.
+// The config message goes out first, so a client always knows its ICE
+// servers before any offer reaches it.
+//
+// A viewer that connects while another viewer is registered replaces it;
+// that is what a page reload looks like from here (the old socket may not
+// have closed yet). The host is told, and drops the old session.
 func (h *hub) register(role string, conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -121,12 +124,12 @@ func (h *hub) register(role string, conn *websocket.Conn) {
 	}
 	if role == "host" {
 		h.host = conn
-		return
+	} else {
+		h.viewer = conn
 	}
-	h.viewer = conn
-	if h.pendingOffer != nil {
-		if err := conn.WriteMessage(websocket.TextMessage, h.pendingOffer); err != nil {
-			log.Println("offer replay failed:", err)
+	if h.host != nil && h.viewer != nil {
+		if err := h.host.WriteMessage(websocket.TextMessage, viewerJoined); err != nil {
+			log.Println("viewer-joined send failed:", err)
 		}
 	}
 }
@@ -136,36 +139,18 @@ func (h *hub) unregister(role string, conn *websocket.Conn) {
 	defer h.mu.Unlock()
 	if role == "host" && h.host == conn {
 		h.host = nil
-		// The offer belongs to this host's peer connection. Once the host
-		// is gone, replaying it to a new viewer would hand it a dead offer.
-		h.pendingOffer = nil
 	}
 	if role == "viewer" && h.viewer == conn {
 		h.viewer = nil
 	}
 }
 
-// relay forwards a message to the other role. The server is still a relay,
-// not a signaling protocol implementation: the only thing it reads is the
-// "type" field, to know when an offer is waiting (remember it) and when it
-// has been answered (forget it). Everything else passes through as opaque
-// bytes. The whole thing runs under the lock so writes to a connection are
-// serialized with register's replay.
+// relay forwards a message to the other role as opaque bytes; the server
+// never parses offers or answers. It runs under the lock so writes to a
+// connection are serialized with register's.
 func (h *hub) relay(role string, msgType int, msg []byte) {
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	_ = json.Unmarshal(msg, &envelope)
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
-
-	if role == "host" && envelope.Type == "offer" {
-		h.pendingOffer = msg
-	}
-	if role == "viewer" && envelope.Type == "answer" {
-		h.pendingOffer = nil
-	}
 
 	peer := h.viewer
 	if role == "viewer" {

@@ -196,6 +196,34 @@ before `main` (this one: `v3-input`).
    answer cap; architecture and connection-setup diagrams show the channel.
    A separate reverse arrow for input made Mermaid reshuffle the whole
    architecture layout, so input shares the peer-to-peer edge label instead.
+4. Oct 12, input channel test run and passed (Mac browser on localhost,
+   same machine as the host; not yet run on the iPhone or through TURN):
+   the host printed `input
+   channel open`, the hello, and one `input: tap N` per tap, matching the
+   count on the viewer page. The path from viewer to host is proven, so the
+   next step can build the real input protocol on top of it. My first
+   test instructions said "open the viewer" without giving the URLs; the
+   second pass listed exact URLs per setup (localhost, LAN IP, VPS).
+
+5. Oct 12, viewer reload. A reloaded page got no video until the host
+   restarted: the host made one offer at startup, the server replayed it to
+   a late viewer, and the first answer used it up. Replaced the replay with
+   a `viewer-joined` message from the server; the host now runs a loop that
+   gives every joining viewer a new peer connection and offer, numbered so a
+   stale answer (two quick reloads) is ignored. The video track is created
+   once and shared, so capture never stops. Side effects: restarting the
+   host while the page stays open also works now, and the server got
+   simpler (it no longer parses message types). Signaling moved to its own
+   tokio task, which forced the error type to `Send + Sync`. Host builds,
+   Go tests pass (new test for viewer-joined in both connect orders and on
+   reload); not yet run end to end.
+6. Oct 12, reload test on the Mac browser passed: six sessions in one host
+   run, each reload (including a hard refresh after clearing cookies)
+   printed `viewer joined, starting session N` and reconnected. Session 1
+   never got an answer; most likely the tab still had the pre-change page,
+   whose answer has no `session` field, so the host's parser skipped it
+   without a word. Old page plus new host fails silently, which is worth
+   remembering when the VPS still serves the old page.
 
 ## Mistakes worth remembering
 

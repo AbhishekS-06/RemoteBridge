@@ -21,15 +21,24 @@ pub struct IceServerConfig {
 }
 
 /// `Config` is sent by the server, first, right after connecting: the relay
-/// servers to use. `Offer` and `Answer` are the host/viewer handshake and are
-/// relayed between the two sides.
+/// servers to use. `ViewerJoined` is also from the server: a viewer connected
+/// (or reloaded), so the host should start a new session. `Offer` and
+/// `Answer` are the host/viewer handshake and are relayed between the two
+/// sides; `session` ties an answer to the offer it answers.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SignalMessage {
     Config { ice_servers: Vec<IceServerConfig> },
-    Offer { sdp: String },
-    Answer { sdp: String },
+    #[serde(rename = "viewer-joined")]
+    ViewerJoined,
+    Offer { sdp: String, session: u32 },
+    Answer { sdp: String, session: u32 },
 }
+
+/// Errors that can cross threads. The host runs signaling on its own tokio
+/// task, and tokio only moves a task between threads if everything it holds,
+/// errors included, is Send.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct SignalingClient {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -56,12 +65,12 @@ pub fn host_url(server: &str, token: Option<&str>) -> Result<String, String> {
 }
 
 impl SignalingClient {
-    pub async fn connect(url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn connect(url: &str) -> Result<Self, BoxError> {
         let (socket, _) = connect_async(url).await?;
         Ok(Self { socket })
     }
 
-    pub async fn send(&mut self, msg: &SignalMessage) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send(&mut self, msg: &SignalMessage) -> Result<(), BoxError> {
         let text = serde_json::to_string(msg)?;
         self.socket.send(Message::Text(text)).await?;
         Ok(())
@@ -70,7 +79,7 @@ impl SignalingClient {
     /// Block until the next parseable signaling message arrives. Anything
     /// that isn't a text frame (ping/pong, close) is skipped rather than
     /// treated as an error -- the websocket protocol sends those on its own.
-    pub async fn recv(&mut self) -> Result<SignalMessage, Box<dyn std::error::Error>> {
+    pub async fn recv(&mut self) -> Result<SignalMessage, BoxError> {
         while let Some(msg) = self.socket.next().await {
             if let Message::Text(text) = msg? {
                 if let Ok(signal) = serde_json::from_str(&text) {
