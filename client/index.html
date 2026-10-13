@@ -42,64 +42,190 @@
     let answerState = "waiting for offer";
     let render = () => {};
 
-    // Touch input. Positions go to the host as fractions (0..1) of the
-    // video frame, so this page never needs the Mac's screen size; the host
-    // maps them to screen points (host/src/input.rs). The page letterboxes
-    // the frame (object-fit: contain), so the fraction is measured against
-    // the area the video is actually drawn in, not the whole element.
-    function framePosition(event) {
+    // Input. Positions and distances go to the host as fractions (0..1) of
+    // the video frame, so this page never needs the Mac's screen size; the
+    // host maps them to screen points (host/src/input.rs). The page
+    // letterboxes the frame (object-fit: contain), so fractions are measured
+    // against the area the video is actually drawn in, not the whole element.
+    function frameRect() {
       const vw = video.videoWidth, vh = video.videoHeight;
       if (!vw || !vh) return null;
       const rect = video.getBoundingClientRect();
       const scale = Math.min(rect.width / vw, rect.height / vh);
-      const left = rect.left + (rect.width - vw * scale) / 2;
-      const top = rect.top + (rect.height - vh * scale) / 2;
       return {
-        x: (event.clientX - left) / (vw * scale),
-        y: (event.clientY - top) / (vh * scale),
+        left: rect.left + (rect.width - vw * scale) / 2,
+        top: rect.top + (rect.height - vh * scale) / 2,
+        width: vw * scale,
+        height: vh * scale,
       };
     }
 
-    function sendInput(type, pos) {
+    function framePosition(event) {
+      const frame = frameRect();
+      if (!frame) return null;
+      return {
+        x: (event.clientX - frame.left) / frame.width,
+        y: (event.clientY - frame.top) / frame.height,
+      };
+    }
+
+    function sendInput(msg) {
       if (!inputChannel || inputChannel.readyState !== "open") return;
-      inputChannel.send(JSON.stringify({
-        type,
-        x: Math.min(Math.max(pos.x, 0), 1),
-        y: Math.min(Math.max(pos.y, 0), 1),
-      }));
+      inputChannel.send(JSON.stringify(msg));
       eventsSent += 1;
       render();
     }
 
-    // One finger acts as the left mouse button: touch presses, sliding
-    // drags, lifting releases. A tap is a click; two quick taps a
-    // double-click. Only the primary pointer counts, so a second finger
-    // cannot press the button again mid-drag.
-    let pointerDown = false;
-    video.addEventListener("pointerdown", (event) => {
-      if (!event.isPrimary) return;
-      const pos = framePosition(event);
-      // A touch on the black bars around the video is not on the screen.
-      if (!pos || pos.x < 0 || pos.x > 1 || pos.y < 0 || pos.y > 1) return;
-      pointerDown = true;
-      // Keep receiving moves and the final up even if the finger leaves the
-      // video element.
-      video.setPointerCapture(event.pointerId);
-      sendInput("down", pos);
-    });
-    video.addEventListener("pointermove", (event) => {
-      if (!pointerDown || !event.isPrimary) return;
-      const pos = framePosition(event);
-      if (pos) sendInput("move", pos);
-    });
-    // pointercancel fires when the browser takes the touch for itself (an
-    // incoming call, a system gesture). It still has to release the button.
-    for (const type of ["pointerup", "pointercancel"]) {
-      video.addEventListener(type, (event) => {
-        if (!pointerDown || !event.isPrimary) return;
-        pointerDown = false;
+    const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
+    function sendPosition(type, pos) {
+      sendInput({ type, x: clamp01(pos.x), y: clamp01(pos.y) });
+    }
+
+    // A mouse (a browser on a computer) points directly: the left button
+    // presses, drags and releases at the pointer's position.
+    let mouseDown = false;
+    function onMouse(event) {
+      if (event.type === "pointerdown") {
+        if (event.button !== 0) return;
         const pos = framePosition(event);
-        if (pos) sendInput("up", pos);
+        // A press on the black bars around the video is not on the screen.
+        if (!pos || pos.x < 0 || pos.x > 1 || pos.y < 0 || pos.y > 1) return;
+        mouseDown = true;
+        // Keep receiving moves and the final up even if the pointer leaves
+        // the video element.
+        video.setPointerCapture(event.pointerId);
+        sendPosition("down", pos);
+        return;
+      }
+      if (!mouseDown) return;
+      const pos = framePosition(event);
+      if (event.type === "pointermove") {
+        if (pos) sendPosition("move", pos);
+        return;
+      }
+      // pointerup or pointercancel: either way the button is released.
+      mouseDown = false;
+      if (pos) sendPosition("up", pos);
+    }
+
+    // A touchscreen acts as a trackpad. Pointing directly with a finger at a
+    // phone-sized picture of the Mac's screen hides the target and lands a
+    // few points off; moving the cursor relatively does not, and the video
+    // shows the Mac's cursor, so the finger can be anywhere on the page.
+    //   one finger slides: the cursor moves the same distance
+    //   one-finger tap: left click (two quick taps: double-click)
+    //   tap, then touch again and slide: drag with the left button held
+    //   two-finger tap: right click
+    //   two fingers slide: scroll, the content following the fingers
+    const TAP_SLOP_PX = 10;        // a finger moving less than this is still tapping
+    const TAP_MAX_MS = 300;        // a touch held longer than this is not a tap
+    const DRAG_AFTER_TAP_MS = 300; // touching again this soon after a tap can drag
+    const TRACKPAD_SPEED = 1;      // cursor distance per finger distance
+
+    const touches = new Map(); // pointerId -> latest {x, y} in page pixels
+    let gesture = null;        // the current gesture, from first touch to last lift
+    let lastTapAt = 0;
+
+    // The fingers' average position. With two fingers this is what moves
+    // when they slide together.
+    function touchCentre() {
+      let x = 0, y = 0;
+      for (const t of touches.values()) { x += t.x; y += t.y; }
+      return { x: x / touches.size, y: y / touches.size };
+    }
+
+    function onTouchDown(event) {
+      if (touches.size === 0) {
+        gesture = {
+          startedAt: event.timeStamp,
+          fingers: 1,
+          travelled: 0,
+          moved: false,
+          dragArmed: event.timeStamp - lastTapAt < DRAG_AFTER_TAP_MS,
+          dragging: false,
+          last: null,
+        };
+      }
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      video.setPointerCapture(event.pointerId);
+      // Once a second finger lands the gesture stays a two-finger one until
+      // every finger has lifted, so lifting one finger first does not turn
+      // the end of a scroll into a cursor move.
+      if (touches.size >= 2 && gesture.fingers === 1) {
+        gesture.fingers = 2;
+        if (gesture.dragging) {
+          gesture.dragging = false;
+          sendInput({ type: "release", button: "left" });
+        }
+      }
+      // Measure from here, so a finger landing does not count as the
+      // centre moving.
+      gesture.last = touchCentre();
+    }
+
+    function onTouchMove(event) {
+      if (!touches.has(event.pointerId)) return;
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const centre = touchCentre();
+      const dx = centre.x - gesture.last.x, dy = centre.y - gesture.last.y;
+      gesture.last = centre;
+      gesture.travelled += Math.hypot(dx, dy);
+      // A finger wobbles a little during a tap. Ignoring movement until it
+      // passes the slop keeps a tap's click where the cursor was.
+      if (!gesture.moved) {
+        if (gesture.travelled < TAP_SLOP_PX) return;
+        gesture.moved = true;
+      }
+      const frame = frameRect();
+      if (!frame) return;
+      const fx = dx / frame.width, fy = dy / frame.height;
+      if (gesture.fingers === 2) {
+        sendInput({ type: "scroll", dx: fx, dy: fy });
+        return;
+      }
+      if (gesture.dragArmed && !gesture.dragging) {
+        gesture.dragging = true;
+        sendInput({ type: "press", button: "left" });
+      }
+      sendInput({ type: "move_rel", dx: fx * TRACKPAD_SPEED, dy: fy * TRACKPAD_SPEED });
+    }
+
+    function onTouchUp(event) {
+      if (!touches.has(event.pointerId)) return;
+      touches.delete(event.pointerId);
+      if (touches.size > 0) {
+        gesture.last = touchCentre();
+        return;
+      }
+      const ended = gesture;
+      gesture = null;
+      if (ended.dragging) {
+        sendInput({ type: "release", button: "left" });
+        return;
+      }
+      // pointercancel means the browser took the touch for itself (an
+      // incoming call, a system gesture): never click for it.
+      if (event.type === "pointercancel") return;
+      if (ended.moved || event.timeStamp - ended.startedAt > TAP_MAX_MS) return;
+      if (ended.fingers === 2) {
+        sendInput({ type: "click", button: "right" });
+      } else {
+        sendInput({ type: "click", button: "left" });
+        lastTapAt = event.timeStamp;
+      }
+    }
+
+    for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
+      video.addEventListener(type, (event) => {
+        if (event.pointerType !== "touch") {
+          onMouse(event);
+        } else if (type === "pointerdown") {
+          onTouchDown(event);
+        } else if (type === "pointermove") {
+          onTouchMove(event);
+        } else {
+          onTouchUp(event);
+        }
       });
     }
 

@@ -1,11 +1,16 @@
 //! Turns pointer events from the viewer into mouse events on this Mac.
 //!
-//! The viewer sends positions as fractions (0..1) of the video frame, so it
-//! never needs to know the Mac's screen size, and the host converts them to
-//! screen points here. The conversion has to undo the capture's letterbox:
-//! ScreenCaptureKit scales the display into the 1280x720 frame keeping its
-//! aspect ratio, so a 16:10-ish MacBook screen sits between black bars on
-//! the left and right of the frame.
+//! The viewer sends positions and distances as fractions (0..1) of the video
+//! frame, so it never needs to know the Mac's screen size, and the host
+//! converts them to screen points here. The conversion has to undo the
+//! capture's letterbox: ScreenCaptureKit scales the display into the
+//! 1280x720 frame keeping its aspect ratio, so a 16:10-ish MacBook screen
+//! sits between black bars on the left and right of the frame.
+//!
+//! Two kinds of event arrive. A mouse on a desktop browser points directly
+//! (down/move/up at a position). A phone's touchscreen acts as a trackpad:
+//! the page recognises the gestures and sends relative moves, clicks,
+//! button presses for drags, and scrolls.
 //!
 //! Injection runs on one dedicated thread that owns the `Enigo` handle. The
 //! data channel callbacks only parse and forward events, so they never block
@@ -13,23 +18,51 @@
 
 use std::sync::mpsc;
 
-use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings};
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Mouse, Settings};
 use serde::Deserialize;
 
-/// One pointer event from the viewer, as JSON on the input data channel:
-/// `{"type":"down","x":0.5,"y":0.25}`. Only the primary touch is sent: down
-/// presses the left button, move drags (or just moves), up releases.
+/// One pointer event from the viewer, as JSON on the input data channel,
+/// for example `{"type":"down","x":0.5,"y":0.25}` or
+/// `{"type":"click","button":"right"}`.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputEvent {
+    /// Direct pointing (desktop mouse): down presses the left button at the
+    /// position, move drags (or just moves), up releases.
     Down { x: f64, y: f64 },
     Move { x: f64, y: f64 },
     Up { x: f64, y: f64 },
+    /// Trackpad (touch): move the cursor by a distance, in frame fractions.
+    MoveRel { dx: f64, dy: f64 },
+    /// Press and release at the cursor (a tap, or a two-finger tap).
+    Click { button: MouseButton },
+    /// Hold and release a button at the cursor (tap then drag).
+    Press { button: MouseButton },
+    Release { button: MouseButton },
+    /// Scroll by a distance, in frame fractions, in the direction the
+    /// fingers moved (content follows the fingers, as on a phone).
+    Scroll { dx: f64, dy: f64 },
     /// Sent by the host itself, never by the viewer, when an input channel
     /// closes. A viewer that disconnects mid-drag never sends its "up", and
-    /// without this the left button would stay held down on the Mac.
+    /// without this the button would stay held down on the Mac.
     #[serde(skip)]
     Reset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MouseButton {
+    Left,
+    Right,
+}
+
+impl MouseButton {
+    fn to_enigo(self) -> Button {
+        match self {
+            MouseButton::Left => Button::Left,
+            MouseButton::Right => Button::Right,
+        }
+    }
 }
 
 pub type InputSender = mpsc::Sender<InputEvent>;
@@ -44,7 +77,7 @@ pub fn start_injector(frame_width: u32, frame_height: u32) -> InputSender {
         // On macOS this checks the Accessibility permission and, if it is
         // missing, opens the System Settings prompt. Like Screen Recording,
         // it is granted to the terminal app the host runs from.
-        let mut enigo = match Enigo::new(&Settings::default()) {
+        let enigo = match Enigo::new(&Settings::default()) {
             Ok(enigo) => enigo,
             Err(e) => {
                 println!(
@@ -64,9 +97,15 @@ pub fn start_injector(frame_width: u32, frame_height: u32) -> InputSender {
         let map = FrameMap::new(frame_width, frame_height, display.0, display.1);
         println!("input ready, display {}x{} points", display.0, display.1);
 
-        let mut pressed = false;
+        let mut injector = Injector {
+            enigo,
+            map,
+            held: Vec::new(),
+            move_rest: (0.0, 0.0),
+            scroll_rest: (0.0, 0.0),
+        };
         for event in rx {
-            if let Err(e) = apply(&mut enigo, &map, &mut pressed, event) {
+            if let Err(e) = injector.apply(event) {
                 println!("input injection failed: {e}");
             }
         }
@@ -74,41 +113,109 @@ pub fn start_injector(frame_width: u32, frame_height: u32) -> InputSender {
     tx
 }
 
-fn apply(
-    enigo: &mut Enigo,
-    map: &FrameMap,
-    pressed: &mut bool,
-    event: InputEvent,
-) -> Result<(), enigo::InputError> {
-    match event {
-        // enigo presses the button wherever the cursor currently is, so the
-        // cursor is moved to the touch point first.
-        InputEvent::Down { x, y } => {
-            let (px, py) = map.to_screen(x, y);
-            enigo.move_mouse(px, py, Coordinate::Abs)?;
-            enigo.button(Button::Left, Direction::Press)?;
-            *pressed = true;
-        }
-        // With the button held, enigo sends a drag event instead of a plain
-        // move, which is what lets a swipe drag a window or select text.
-        InputEvent::Move { x, y } => {
-            let (px, py) = map.to_screen(x, y);
-            enigo.move_mouse(px, py, Coordinate::Abs)?;
-        }
-        InputEvent::Up { x, y } => {
-            let (px, py) = map.to_screen(x, y);
-            enigo.move_mouse(px, py, Coordinate::Abs)?;
-            enigo.button(Button::Left, Direction::Release)?;
-            *pressed = false;
-        }
-        InputEvent::Reset => {
-            if *pressed {
-                enigo.button(Button::Left, Direction::Release)?;
-                *pressed = false;
+/// The injector thread's state: which buttons it is holding down, so they
+/// can be released on Reset, and the fractions of a point left over from
+/// earlier relative moves and scrolls.
+struct Injector {
+    enigo: Enigo,
+    map: FrameMap,
+    held: Vec<MouseButton>,
+    /// enigo moves and scrolls in whole points, and a slow finger moves less
+    /// than one point per event. Dropping the remainder each time would
+    /// make slow movement stall, so it carries over to the next event.
+    move_rest: (f64, f64),
+    scroll_rest: (f64, f64),
+}
+
+impl Injector {
+    fn apply(&mut self, event: InputEvent) -> Result<(), enigo::InputError> {
+        match event {
+            // enigo presses the button wherever the cursor currently is, so
+            // the cursor is moved to the touch point first.
+            InputEvent::Down { x, y } => {
+                let (px, py) = self.map.to_screen(x, y);
+                self.enigo.move_mouse(px, py, Coordinate::Abs)?;
+                self.press(MouseButton::Left)?;
+            }
+            // With the button held, enigo sends a drag event instead of a
+            // plain move, which is what lets a swipe drag a window or select
+            // text. The same holds for MoveRel during a tap-then-drag.
+            InputEvent::Move { x, y } => {
+                let (px, py) = self.map.to_screen(x, y);
+                self.enigo.move_mouse(px, py, Coordinate::Abs)?;
+            }
+            InputEvent::Up { x, y } => {
+                let (px, py) = self.map.to_screen(x, y);
+                self.enigo.move_mouse(px, py, Coordinate::Abs)?;
+                self.release(MouseButton::Left)?;
+            }
+            // The new position is computed here and sent as absolute,
+            // rather than using enigo's Coordinate::Rel, because enigo does
+            // not keep a relative move on the screen (a TODO in its macOS
+            // code); this clamps it to the display.
+            InputEvent::MoveRel { dx, dy } => {
+                let (dx, dy) = self.map.to_points(dx, dy);
+                let step_x = take_whole(&mut self.move_rest.0, dx);
+                let step_y = take_whole(&mut self.move_rest.1, dy);
+                if step_x != 0 || step_y != 0 {
+                    let (cx, cy) = self.enigo.location()?;
+                    let x = (cx + step_x).clamp(0, self.map.display_width as i32 - 1);
+                    let y = (cy + step_y).clamp(0, self.map.display_height as i32 - 1);
+                    self.enigo.move_mouse(x, y, Coordinate::Abs)?;
+                }
+            }
+            // enigo counts quick repeated clicks itself and marks them as
+            // double (and triple) clicks, so two taps open a file.
+            InputEvent::Click { button } => {
+                self.enigo.button(button.to_enigo(), Direction::Click)?;
+            }
+            InputEvent::Press { button } => self.press(button)?,
+            InputEvent::Release { button } => self.release(button)?,
+            // smooth_scroll takes pixels; positive scrolls down or right,
+            // which moves the content up or left. The fingers moving up
+            // (negative dy) should move the content up, hence the minus.
+            InputEvent::Scroll { dx, dy } => {
+                let (dx, dy) = self.map.to_points(dx, dy);
+                let step_x = take_whole(&mut self.scroll_rest.0, -dx);
+                let step_y = take_whole(&mut self.scroll_rest.1, -dy);
+                if step_y != 0 {
+                    self.enigo.smooth_scroll(step_y, Axis::Vertical)?;
+                }
+                if step_x != 0 {
+                    self.enigo.smooth_scroll(step_x, Axis::Horizontal)?;
+                }
+            }
+            InputEvent::Reset => {
+                for button in std::mem::take(&mut self.held) {
+                    self.enigo.button(button.to_enigo(), Direction::Release)?;
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
+
+    fn press(&mut self, button: MouseButton) -> Result<(), enigo::InputError> {
+        self.enigo.button(button.to_enigo(), Direction::Press)?;
+        if !self.held.contains(&button) {
+            self.held.push(button);
+        }
+        Ok(())
+    }
+
+    fn release(&mut self, button: MouseButton) -> Result<(), enigo::InputError> {
+        self.enigo.button(button.to_enigo(), Direction::Release)?;
+        self.held.retain(|&b| b != button);
+        Ok(())
+    }
+}
+
+/// Adds `delta` to the carried-over remainder and takes out the whole
+/// points, leaving the fraction for next time.
+fn take_whole(rest: &mut f64, delta: f64) -> i32 {
+    *rest += delta;
+    let whole = rest.trunc();
+    *rest -= whole;
+    whole as i32
 }
 
 /// Where the display sits inside the captured frame. ScreenCaptureKit
@@ -154,6 +261,16 @@ impl FrameMap {
             py.clamp(0.0, self.display_height - 1.0).round() as i32,
         )
     }
+
+    /// A distance in frame fractions to a distance in display points. Unlike
+    /// a position it has no offset: the bars only shift where the screen
+    /// starts, not how far a movement goes.
+    fn to_points(&self, dx: f64, dy: f64) -> (f64, f64) {
+        (
+            dx * self.frame_width / self.scale,
+            dy * self.frame_height / self.scale,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -188,9 +305,44 @@ mod tests {
     }
 
     #[test]
+    fn full_frame_height_moves_full_screen_height() {
+        // The display fills the frame vertically, so a move of the whole
+        // frame height is the whole screen height. Horizontally the frame
+        // is wider than the screen content, so a full-width move goes past
+        // the screen's width (by the two bars).
+        let (dx, dy) = macbook().to_points(1.0, 1.0);
+        assert!((dy - 982.0).abs() < 1e-9);
+        assert!((dx - 1280.0 * 982.0 / 720.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remainders_carry_over() {
+        // Four moves of 0.3 points: nothing, nothing, nothing, then one
+        // point (1.2 total), with 0.2 left.
+        let mut rest = 0.0;
+        let steps: Vec<i32> = (0..4).map(|_| take_whole(&mut rest, 0.3)).collect();
+        assert_eq!(steps, vec![0, 0, 0, 1]);
+        assert!((rest - 0.2).abs() < 1e-9);
+        // Negative movement truncates towards zero the same way.
+        let mut rest = 0.0;
+        assert_eq!(take_whole(&mut rest, -2.7), -2);
+        assert!((rest + 0.7).abs() < 1e-9);
+    }
+
+    #[test]
     fn parses_viewer_json() {
         let event: InputEvent = serde_json::from_str(r#"{"type":"down","x":0.25,"y":1}"#).unwrap();
         assert!(matches!(event, InputEvent::Down { x, y } if x == 0.25 && y == 1.0));
+        let event: InputEvent =
+            serde_json::from_str(r#"{"type":"move_rel","dx":0.01,"dy":-0.02}"#).unwrap();
+        assert!(matches!(event, InputEvent::MoveRel { dx, dy } if dx == 0.01 && dy == -0.02));
+        let event: InputEvent =
+            serde_json::from_str(r#"{"type":"click","button":"right"}"#).unwrap();
+        assert!(matches!(event, InputEvent::Click { button: MouseButton::Right }));
+        let event: InputEvent =
+            serde_json::from_str(r#"{"type":"scroll","dx":0,"dy":0.1}"#).unwrap();
+        assert!(matches!(event, InputEvent::Scroll { .. }));
         assert!(serde_json::from_str::<InputEvent>(r#"{"type":"reset"}"#).is_err());
+        assert!(serde_json::from_str::<InputEvent>(r#"{"type":"click","button":"middle"}"#).is_err());
     }
 }

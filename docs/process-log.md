@@ -261,6 +261,38 @@ before `main` (this one: `v3-input`).
     signaling..." (debugging log #10). Input itself never touches the
     signaling server; it rides the data channel, so for touch alone only
     the page needed copying.
+11. Oct 12, touch merged to main as PR #4 (a400f3d). Relay-only touch test
+    with the Mac and the iPhone both on campus Wi-Fi (`--relay` and
+    `?relay=1`) worked: tap clicks, and drag moves windows and selects
+    text. This also covers the campus relay-only run that was still open
+    from Oct 5. The first host start failed with `ConnectionRefused` on
+    port 443 to the VPS; a moment later DNS, port 443 and the page all
+    answered from the same Mac, so it was a passing network refusal, not
+    the code. Two-finger tap and drag did nothing, as built: the page
+    sends only the primary pointer and the host only presses the left
+    button.
+12. Oct 12, reload test on the iPhone through the VPS (normal mode)
+    worked: each reload brought the video back with a new host session.
+13. Oct 12, trackpad mode written on branch `v3-trackpad`. Pointing
+    directly with one finger was awkward on the phone, so touch now acts
+    as a trackpad: one finger moves the cursor relatively, a tap clicks,
+    tap-then-slide drags, a two-finger tap right-clicks, and two fingers
+    sliding scroll. The page recognises the gestures (it has the timing and
+    the finger count) and sends new messages: `move_rel`, `click`, `press`,
+    `release`, `scroll`, with distances as frame fractions like positions.
+    A mouse on a desktop browser keeps the old direct down/move/up. Host
+    details: the injector now remembers which buttons it holds (Reset
+    releases all of them), relative moves are clamped to the display by the
+    host because enigo's own relative move is not, and leftover fractions
+    of a point carry over so slow movement does not stall. Scroll uses
+    enigo's pixel scrolling, which needs its `platform_specific` feature.
+    Host builds with no warnings, 6 unit tests pass, and a Node harness fed
+    fake touch events to the page code and checked the messages for each
+    gesture. Not yet run on the iPhone; the scroll direction in particular
+    needs checking against the Mac's natural scrolling setting.
+14. Oct 12, trackpad mode tested on the iPhone through the VPS (normal
+    mode): all the gestures worked. Deploying it only needed the page
+    copied with `rsync`; the server's Go code did not change.
 
 ## Mistakes worth remembering
 
@@ -286,6 +318,12 @@ before `main` (this one: `v3-input`).
   offer arrives, and the page has no WebSocket open/close handlers. So a
   connected page waiting for the host looks exactly like one that never
   reached the server, which pointed the first guess at the wrong layer.
+- Reporting touch input as "not yet merged" after comparing against a local
+  `main` that had not been fetched since PR #4 merged. Fetch first, then
+  compare against `origin/main`.
+- Describing the planned trackpad gestures in a table without saying clearly
+  enough that none of them were built, so two-finger right click and scroll
+  were tested as if they already existed.
 
 ## What I would do differently
 
@@ -299,10 +337,7 @@ before `main` (this one: `v3-input`).
 
 ## Still to do
 
-- Campus Wi-Fi relay-only run (normal mode passed Oct 5).
-- Touch on the iPhone through the TURN relay (relay-only), and the reload
-  test on the iPhone.
-- Make touch easier to use on the phone; then right-click, scroll, keyboard.
+- Keyboard input.
 - Destroy the test server and rotate the token when finished.
 - v3: input forwarding. v4: pairing and multi-device. v5: native client,
   Windows and Linux hosts.

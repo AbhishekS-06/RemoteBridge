@@ -18,7 +18,7 @@ a phone. No third-party remote desktop service is involved.
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
-| v3 | Input forwarding over data channels, touch mapping | In progress: touch to mouse (click, drag) works from the iPhone through the VPS |
+| v3 | Input forwarding over data channels, touch mapping | In progress: touch works as a trackpad from the iPhone through the VPS (move, click, drag, right click, scroll); keyboard next |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
@@ -36,11 +36,14 @@ from the viewer to the Mac carried test messages in a run with a browser on
 the Mac itself. Those test messages have since been replaced by real touch
 events (one finger as the left mouse button); clicking and dragging work
 from a browser on the Mac itself and from Safari on the iPhone through the
-VPS. Touch works but is awkward on a phone screen.
+VPS, including a relay-only run with the Mac and the iPhone both on campus
+Wi-Fi. Reloading the viewer on the iPhone through the VPS brings the video
+back each time. Pointing directly with a finger was awkward on a phone
+screen, so touch now works as a trackpad instead (relative cursor, tap to
+click, two-finger tap to right click, two-finger slide to scroll),
+verified on the iPhone through the VPS.
 
-**Not yet verified:** relay-only mode on campus Wi-Fi, touch control
-through the TURN relay, and reloading the viewer on the iPhone.
-Not implemented: right-click, scrolling, keyboard, and more than one viewer.
+**Not implemented:** keyboard, and more than one viewer.
 
 ## How it works
 
@@ -158,9 +161,20 @@ RemoteBridge/
 
 At startup the host prints `input ready, display WxH points` (the Mac's
 screen size in points). It prints `peer connection state: connected` once
-the viewer answers, then `input channel open`. Touching the video moves the
-Mac's pointer there and holds the left button down: a tap clicks, a slide
-drags. The viewer's status box counts the events sent.
+the viewer answers, then `input channel open`. On a touchscreen the video
+works like a trackpad:
+
+| Gesture | On the Mac |
+|---|---|
+| One finger slides | Cursor moves the same distance |
+| One-finger tap | Left click (two quick taps: double-click) |
+| Tap, then touch again and slide | Drag with the left button held |
+| Two-finger tap | Right click |
+| Two fingers slide | Scroll, the content following the fingers |
+
+With a mouse (a browser on a computer) the left button clicks and drags at
+the pointer's position instead. The viewer's status box counts the events
+sent.
 Closing the viewer makes the host log `disconnected` and then `failed`. That
 is the normal end of a session. Reloading the viewer prints
 `viewer joined, starting session N` and the video comes back within a
@@ -225,9 +239,16 @@ https://signal.example.com/?token=<secret>
   so a channel created before it is already in the SDP and the viewer
   receives it with no renegotiation. It is ordered and reliable, because a
   lost or reordered "release" would leave a button held down.
-- **Touches are sent as fractions of the video frame.** The viewer sends
-  `{"type":"down","x":0.5,"y":0.25}` with x and y from 0 to 1, so it never
-  needs the Mac's screen size. Two letterboxes are undone on the way: the
+- **Touch is a trackpad, not a pointer.** A finger on a phone-sized
+  picture of the Mac's screen hides what it points at and lands a few
+  points off, so the page turns gestures into relative moves, clicks,
+  button presses and scrolls instead of positions. The gestures are
+  recognised on the page, which has the timing and finger count; the host
+  only injects. A mouse on a desktop browser still points directly.
+- **Positions and distances are sent as fractions of the video frame.**
+  The viewer sends `{"type":"down","x":0.5,"y":0.25}` or
+  `{"type":"move_rel","dx":0.01,"dy":0}` with values relative to the frame,
+  so it never needs the Mac's screen size. Two letterboxes are undone on the way: the
   page measures against the area the video is drawn in (`object-fit:
   contain` adds bars on the phone), and the host removes the black bars
   ScreenCaptureKit adds when it fits a 16:10 screen into the 16:9 frame.
@@ -235,8 +256,10 @@ https://signal.example.com/?token=<secret>
 - **Injection runs on its own thread.** `enigo` (CGEvent underneath on
   macOS) is driven by one thread that owns it. The data channel callback
   only parses JSON and forwards the event, so it never blocks on the OS.
-  When a channel closes the host releases the button, so a viewer that
-  disconnects mid-drag cannot leave it held.
+  When a channel closes the host releases any button it holds, so a
+  viewer that disconnects mid-drag cannot leave it held. Relative moves
+  and scrolls keep the fraction of a point left over from each event, so
+  a slow finger still moves the cursor.
 - **No B-frames, no lookahead.** Remote desktop is latency-sensitive, so
   compression efficiency is traded for lower delay.
 - **Signaling is not part of the media path.** The server can be replaced or
@@ -282,9 +305,8 @@ https://signal.example.com/?token=<secret>
 - If the signaling server restarts, both sides must be restarted: neither
   reconnects its WebSocket.
 - The host captures and encodes even when no viewer is connected.
-- Input is one finger as the left mouse button: no right-click,
-  scrolling, keyboard, or trackpad-style relative movement yet. Small
-  targets are hard to hit on a phone screen.
+- No keyboard input yet. The trackpad gestures have no pinch zoom, so
+  small text on a phone is still hard to read.
 - The viewer page shows "connecting to signaling..." until the first offer
   arrives, even when its WebSocket is connected and only the host is
   missing.
