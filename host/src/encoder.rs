@@ -11,8 +11,8 @@ use std::io::Write;
 
 // The crate is named ffmpeg-next on crates.io, but its Rust name is
 // ffmpeg_next. Aliasing to `ffmpeg` keeps the rest of the file readable.
-use ffmpeg_next as ffmpeg;
 use ffmpeg::{Dictionary, Packet, Rational, codec, encoder, format, frame};
+use ffmpeg_next as ffmpeg;
 
 pub struct H264Encoder {
     // The opened encoder. FFmpeg calls this a "codec context": it holds the
@@ -35,8 +35,8 @@ impl H264Encoder {
 
         // Ask FFmpeg for the libx264 encoder by name. If your FFmpeg was built
         // without it, this returns None and we bail with a clear message.
-        let codec = encoder::find_by_name("libx264")
-            .ok_or("libx264 not found in this FFmpeg build")?;
+        let codec =
+            encoder::find_by_name("libx264").ok_or("libx264 not found in this FFmpeg build")?;
 
         // Build an unconfigured context for that codec, then narrow it to a
         // video encoder. The .encoder().video() chain is the crate's way of
@@ -103,7 +103,11 @@ impl H264Encoder {
     /// The encoder is a pipeline, not a function: sending one frame does not
     /// guarantee exactly one packet comes out. With zerolatency it usually
     /// does, but the API contract is "send, then drain whatever is ready".
-    pub fn encode<W: Write>(&mut self, frame: &frame::Video, out: &mut W) -> Result<(), Box<dyn Error>> {
+    pub fn encode<W: Write>(
+        &mut self,
+        frame: &frame::Video,
+        out: &mut W,
+    ) -> Result<(), Box<dyn Error>> {
         self.encoder.send_frame(frame)?;
         self.drain(out)
     }

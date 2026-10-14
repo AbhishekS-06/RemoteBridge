@@ -99,7 +99,10 @@ pub async fn run_sessions(
                     Err(e) => println!("session {session} failed to start: {e}"),
                 }
             }
-            SignalMessage::Answer { sdp, session: answered } if answered == session => {
+            SignalMessage::Answer {
+                sdp,
+                session: answered,
+            } if answered == session => {
                 let Some(pc) = &current else { continue };
                 let result = match RTCSessionDescription::answer(sdp) {
                     Ok(answer) => pc.set_remote_description(answer).await,
@@ -109,7 +112,9 @@ pub async fn run_sessions(
                     println!("session {session}: bad answer: {e}");
                 }
             }
-            SignalMessage::Answer { session: answered, .. } => {
+            SignalMessage::Answer {
+                session: answered, ..
+            } => {
                 println!("ignoring answer for old session {answered}");
             }
             // Config was already consumed above, and offers only go from

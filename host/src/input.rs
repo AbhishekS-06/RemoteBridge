@@ -36,21 +36,44 @@ use serde::Deserialize;
 pub enum InputEvent {
     /// Direct pointing (desktop mouse): down presses the left button at the
     /// position, move drags (or just moves), up releases.
-    Down { x: f64, y: f64 },
-    Move { x: f64, y: f64 },
-    Up { x: f64, y: f64 },
+    Down {
+        x: f64,
+        y: f64,
+    },
+    Move {
+        x: f64,
+        y: f64,
+    },
+    Up {
+        x: f64,
+        y: f64,
+    },
     /// Trackpad (touch): move the cursor by a distance, in frame fractions.
-    MoveRel { dx: f64, dy: f64 },
+    MoveRel {
+        dx: f64,
+        dy: f64,
+    },
     /// Press and release at the cursor (a tap, or a two-finger tap).
-    Click { button: MouseButton },
+    Click {
+        button: MouseButton,
+    },
     /// Hold and release a button at the cursor (tap then drag).
-    Press { button: MouseButton },
-    Release { button: MouseButton },
+    Press {
+        button: MouseButton,
+    },
+    Release {
+        button: MouseButton,
+    },
     /// Scroll by a distance, in frame fractions, in the direction the
     /// fingers moved (content follows the fingers, as on a phone).
-    Scroll { dx: f64, dy: f64 },
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
     /// Characters the viewer typed, entered as they are.
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// One key pressed and released with the modifiers held around it.
     /// The whole combination is one message, so no modifier is ever left
     /// held on the Mac between messages.
@@ -448,12 +471,19 @@ mod tests {
         assert!(matches!(event, InputEvent::MoveRel { dx, dy } if dx == 0.01 && dy == -0.02));
         let event: InputEvent =
             serde_json::from_str(r#"{"type":"click","button":"right"}"#).unwrap();
-        assert!(matches!(event, InputEvent::Click { button: MouseButton::Right }));
+        assert!(matches!(
+            event,
+            InputEvent::Click {
+                button: MouseButton::Right
+            }
+        ));
         let event: InputEvent =
             serde_json::from_str(r#"{"type":"scroll","dx":0,"dy":0.1}"#).unwrap();
         assert!(matches!(event, InputEvent::Scroll { .. }));
         assert!(serde_json::from_str::<InputEvent>(r#"{"type":"reset"}"#).is_err());
-        assert!(serde_json::from_str::<InputEvent>(r#"{"type":"click","button":"middle"}"#).is_err());
+        assert!(
+            serde_json::from_str::<InputEvent>(r#"{"type":"click","button":"middle"}"#).is_err()
+        );
     }
 
     #[test]
