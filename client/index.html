@@ -13,11 +13,25 @@
       color: #9f9; font: 12px/1.3 monospace; white-space: pre;
       background: rgba(0, 0, 0, 0.6); padding: 4px 6px;
     }
+    #keyboard {
+      position: fixed; bottom: 12px; right: 12px; z-index: 1;
+      color: #9f9; font: 14px monospace; padding: 10px 14px;
+      background: rgba(0, 0, 0, 0.6); border: 1px solid #9f9; border-radius: 6px;
+    }
+    /* Invisible but focusable, so focusing it brings up the phone's
+       keyboard. 16px stops Safari zooming the page in on focus. */
+    #typing {
+      position: fixed; top: 0; left: 0; width: 1px; height: 1px;
+      opacity: 0; border: 0; padding: 0; font-size: 16px;
+    }
   </style>
 </head>
 <body>
   <video id="remote" autoplay playsinline muted></video>
   <div id="status">connecting to signaling...</div>
+  <button id="keyboard">kbd</button>
+  <input id="typing" type="text" autocomplete="off" autocorrect="off"
+         autocapitalize="off" spellcheck="false" aria-label="type on the remote screen">
   <script>
     // The signaling server is whatever server served this page, so the same
     // file works from localhost, a LAN IP, or a VPS. wss on an https page,
@@ -228,6 +242,112 @@
         }
       });
     }
+
+    // Keyboard. Characters go to the host as text ({type: "text"}) and the
+    // Mac enters them as they are. Keys that are not characters, and any key
+    // pressed with Cmd or Ctrl, go as a key name plus the modifiers held
+    // ({type: "key"}); the host accepts only the names in
+    // host/src/input.rs (KeyName).
+    const NAMED_KEYS = new Set([
+      "Enter", "Backspace", "Delete", "Tab", "Escape",
+      "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+      "Home", "End", "PageUp", "PageDown",
+    ]);
+    const typing = document.getElementById("typing");
+
+    function modifiers(event) {
+      const mods = [];
+      if (event.shiftKey) mods.push("shift");
+      if (event.ctrlKey) mods.push("control");
+      if (event.altKey) mods.push("alt");
+      if (event.metaKey) mods.push("meta");
+      return mods;
+    }
+
+    // [...s] counts characters, not UTF-16 units, so an emoji is one.
+    const isCharacter = (key) => [...key].length === 1;
+
+    // The key a shortcut is on. With Shift held the browser reports the
+    // shifted character (Cmd+Shift+4 gives "$"), and the host would then
+    // look for a key that types "$". event.code names the physical key
+    // ("Digit4", "KeyZ"), which gives back the unshifted character.
+    function shortcutKey(event) {
+      const m = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(event.code);
+      if (m) return (m[1] || m[2]).toLowerCase();
+      return event.key;
+    }
+
+    // A physical keyboard (a computer, or an iPad keyboard) sends everything
+    // through keydown. While the hidden field has focus (the phone's
+    // keyboard is up), characters and backspace come from the field's input
+    // events instead, because a phone keyboard does not reliably report
+    // them as keydowns; keydown then only handles the keys that do not edit
+    // the field, and shortcuts.
+    document.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
+      const inField = event.target === typing;
+      if (event.metaKey || event.ctrlKey) {
+        if (!isCharacter(event.key) && !NAMED_KEYS.has(event.key)) return;
+        sendInput({ type: "key", key: shortcutKey(event), mods: modifiers(event) });
+      } else if (NAMED_KEYS.has(event.key)) {
+        if (inField && event.key === "Backspace") return;
+        sendInput({ type: "key", key: event.key, mods: modifiers(event) });
+      } else if (isCharacter(event.key)) {
+        if (inField) return;
+        sendInput({ type: "text", text: event.key });
+      } else {
+        return; // a bare modifier, a dead key, F-keys: nothing to send
+      }
+      // Keep the browser from acting on the key too: space scrolling,
+      // Tab moving focus, Cmd+R reloading. Some shortcuts (Cmd+W, Cmd+Q)
+      // the browser keeps for itself and never lets a page stop.
+      event.preventDefault();
+    });
+
+    // The phone's keyboard types into the hidden field. The field always
+    // holds one zero-width space with the caret after it, so backspace
+    // always has something to delete (on an empty field it fires no event).
+    // After each edit the field is compared with that, the difference sent,
+    // and the field put back.
+    const SENTINEL = "​";
+    function resetTyping() {
+      typing.value = SENTINEL;
+      typing.setSelectionRange(1, 1);
+    }
+    typing.addEventListener("input", () => {
+      const value = typing.value;
+      if (value.startsWith(SENTINEL)) {
+        if (value.length > 1) sendInput({ type: "text", text: value.slice(1) });
+      } else if (value === "") {
+        sendInput({ type: "key", key: "Backspace", mods: [] });
+      } else {
+        // Something replaced the sentinel itself (selected and typed over):
+        // send what is there now, minus any sentinel left inside it.
+        sendInput({ type: "text", text: value.replaceAll(SENTINEL, "") });
+      }
+      resetTyping();
+    });
+    typing.addEventListener("focus", resetTyping);
+
+    // The button toggles the phone's keyboard. Focus has to happen inside
+    // the tap's own handler, or iOS will not show the keyboard. Whether the
+    // field had focus is read on pointerdown, before pressing the button can
+    // take focus away from it. Cancelling mousedown keeps the button itself
+    // from taking focus on a computer, where a focused button would be
+    // clicked again by every Enter typed for the Mac.
+    const keyboardButton = document.getElementById("keyboard");
+    let typingWasFocused = false;
+    keyboardButton.addEventListener("pointerdown", () => {
+      typingWasFocused = document.activeElement === typing;
+    });
+    keyboardButton.addEventListener("mousedown", (event) => event.preventDefault());
+    keyboardButton.addEventListener("click", () => {
+      if (typingWasFocused) {
+        typing.blur();
+      } else {
+        typing.focus();
+      }
+    });
 
     // Built fresh for every offer. The ICE servers (including the
     // short-lived TURN credentials) come from the server's config message,

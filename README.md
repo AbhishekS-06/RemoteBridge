@@ -18,7 +18,7 @@ a phone. No third-party remote desktop service is involved.
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
-| v3 | Input forwarding over data channels, touch mapping | In progress: touch works as a trackpad from the iPhone through the VPS (move, click, drag, right click, scroll); keyboard next |
+| v3 | Input forwarding over data channels, touch mapping | In progress: touch works as a trackpad from the iPhone through the VPS (move, click, drag, right click, scroll); on-screen keyboard works from the iPhone on the LAN; VPS run pending |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
@@ -41,9 +41,12 @@ Wi-Fi. Reloading the viewer on the iPhone through the VPS brings the video
 back each time. Pointing directly with a finger was awkward on a phone
 screen, so touch now works as a trackpad instead (relative cursor, tap to
 click, two-finger tap to right click, two-finger slide to scroll),
-verified on the iPhone through the VPS.
+verified on the iPhone through the VPS. Keyboard input (typed text, named
+keys such as enter and the arrows, and Cmd/Ctrl shortcuts) works from the
+iPhone's on-screen keyboard on the same Wi-Fi; the run through the VPS and
+the physical-keyboard path (arrows, shortcuts) are not yet tested.
 
-**Not implemented:** keyboard, and more than one viewer.
+**Not implemented:** more than one viewer.
 
 ## How it works
 
@@ -115,6 +118,8 @@ RemoteBridge/
     src/signaling.rs     WebSocket client, Offer and Answer messages
     src/webrtc_host.rs   peer connection, video track, input data channel,
                          offer/answer handshake
+    src/input.rs         input messages, frame-to-screen mapping, enigo
+                         injector thread (mouse and keyboard)
     .cargo/config.toml   Swift library path and rpath (Command Line Tools only)
   signaling/           Go relay and static file server for client/
     main.go
@@ -175,6 +180,13 @@ works like a trackpad:
 With a mouse (a browser on a computer) the left button clicks and drags at
 the pointer's position instead. The viewer's status box counts the events
 sent.
+
+Keyboard: on another computer, click the video page and type; keys go to
+the Mac. Not from a browser on the host Mac itself: the viewer tab has focus,
+so each injected key comes back to the page and is sent again, forever. On the phone, tap the `kbd` button at the bottom right to bring up
+the keyboard, and tap it again to hide it. Shortcuts with Cmd or Ctrl
+(Cmd+C, Cmd+Tab) are sent as shortcuts, except the ones the browser keeps
+for itself (Cmd+W, Cmd+Q, Cmd+T on a computer).
 Closing the viewer makes the host log `disconnected` and then `failed`. That
 is the normal end of a session. Reloading the viewer prints
 `viewer joined, starting session N` and the video comes back within a
@@ -253,6 +265,17 @@ https://signal.example.com/?token=<secret>
   contain` adds bars on the phone), and the host removes the black bars
   ScreenCaptureKit adds when it fits a 16:10 screen into the 16:9 frame.
   The mapping has unit tests (`host/src/input.rs`).
+- **Typed characters are sent as text, other keys by name.** A
+  character goes as `{"type":"text","text":"a"}` and the host enters
+  the string as it is, so neither side has to know which keys produce it
+  on the Mac's layout. Enter, backspace, the arrows and shortcuts go as
+  `{"type":"key","key":"c","mods":["meta"]}`, using the browser's
+  key names. The host accepts only a fixed list of names and presses the
+  modifiers, the key, and releases the modifiers in one step, so no
+  modifier can be left held between messages. The phone's keyboard types
+  into a hidden text field that always holds one zero-width space, so
+  backspace always has something to delete; the page sends what changed
+  and puts the field back after every edit.
 - **Injection runs on its own thread.** `enigo` (CGEvent underneath on
   macOS) is driven by one thread that owns it. The data channel callback
   only parses JSON and forwards the event, so it never blocks on the OS.
@@ -305,8 +328,11 @@ https://signal.example.com/?token=<secret>
 - If the signaling server restarts, both sides must be restarted: neither
   reconnects its WebSocket.
 - The host captures and encodes even when no viewer is connected.
-- No keyboard input yet. The trackpad gestures have no pinch zoom, so
-  small text on a phone is still hard to read.
+- The trackpad gestures have no pinch zoom, so small text on a phone is
+  still hard to read.
+- Keyboard: no function keys, no composed input (IME, such as Japanese),
+  and Option dead keys (Option+E for an accent) do nothing. Browser-owned
+  shortcuts such as Cmd+W act on the viewer's browser, not the Mac.
 - The viewer page shows "connecting to signaling..." until the first offer
   arrives, even when its WebSocket is connected and only the host is
   missing.

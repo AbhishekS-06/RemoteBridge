@@ -293,6 +293,46 @@ before `main` (this one: `v3-input`).
 14. Oct 12, trackpad mode tested on the iPhone through the VPS (normal
     mode): all the gestures worked. Deploying it only needed the page
     copied with `rsync`; the server's Go code did not change.
+15. Oct 13, trackpad merged as PR #5 (5722307). Keyboard written on branch
+    `v3-keyboard`. Two new messages: `text` for typed characters, entered
+    on the Mac as a string (enigo posts one keyboard event carrying it,
+    so the Mac's layout does not matter), and `key` for a named key plus
+    modifiers (`{"type":"key","key":"c","mods":["meta"]}`). Key names are
+    the browser's own `KeyboardEvent.key` values, and the host rejects any
+    name outside a fixed list at parse time, as it already did for mouse
+    buttons. Reading enigo's macOS code first showed that a modifier
+    pressed through it sets the flags on later key events, so Cmd+C is
+    "press Cmd, click c, release Cmd". The plan had been to track held
+    modifiers and release them on Reset; doing the whole combination in
+    one message instead means nothing is ever held between messages, which
+    is simpler and has nothing to clean up. The host still releases every
+    modifier it pressed if a later step fails.
+    Page side: a physical keyboard goes through `keydown`. The phone has no
+    physical keys, so a `kbd` button focuses a hidden text field to bring
+    up the iOS keyboard, and the page reads what the field's `input` event
+    changed rather than trusting keydown (phone keyboards report
+    characters there unreliably). The field holds one zero-width space so
+    backspace on it always fires an event. Shortcuts use `event.code` for
+    the key, because with Shift held `event.key` is the shifted character
+    (Cmd+Shift+4 reports "$"). Host builds, 8 unit tests pass; a Node
+    harness with a stubbed DOM checked 21 cases (characters, named keys,
+    shortcuts, the hidden field, the button). Not yet run against the Mac.
+    One thing to watch on the phone: tapping the video while the keyboard
+    is up may close it.
+16. Oct 13, test plan for the keyboard. The plan said to test first in a
+    browser on the Mac itself, as was done for touch. That does not work
+    for keys: the viewer tab has to be focused to receive typing, so the
+    Mac delivers each injected key back to that same tab, whose keydown
+    handler sends it to the host again, and one keypress repeats forever.
+    Clicks never had this problem because an injected click is not
+    reported back to the page as a new click. The first keyboard test
+    is the iPhone on the same Wi-Fi instead (no VPS needed), with TextEdit
+    focused on the Mac.
+17. Oct 13, keyboard test from the iPhone's on-screen keyboard on the LAN
+    passed: typing reached TextEdit on the Mac. Debugging it was blind,
+    because the hidden field shows nothing and the host does not print
+    each message, so the next change is to show the typed text above the
+    keyboard on the page.
 
 ## Mistakes worth remembering
 
@@ -324,6 +364,9 @@ before `main` (this one: `v3-input`).
 - Describing the planned trackpad gestures in a table without saying clearly
   enough that none of them were built, so two-finger right click and scroll
   were tested as if they already existed.
+- Planning the first keyboard test in a browser on the Mac itself. Keys
+  injected into the focused viewer tab come back to its keydown handler and
+  are sent again, an endless loop. Caught before the test was run.
 
 ## What I would do differently
 
@@ -337,7 +380,10 @@ before `main` (this one: `v3-input`).
 
 ## Still to do
 
-- Keyboard input.
+- Keyboard input: show typed text above the keyboard; test through the VPS.
+- Workflow: stricter CI (rustfmt, clippy, govulncheck), branch protection,
+  version tags and releases (v0.3.0 at the end of v3), Dependabot, client
+  tests in CI, then a deploy pipeline.
 - Destroy the test server and rotate the token when finished.
 - v3: input forwarding. v4: pairing and multi-device. v5: native client,
   Windows and Linux hosts.

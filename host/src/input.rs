@@ -1,4 +1,4 @@
-//! Turns pointer events from the viewer into mouse events on this Mac.
+//! Turns pointer and keyboard events from the viewer into input on this Mac.
 //!
 //! The viewer sends positions and distances as fractions (0..1) of the video
 //! frame, so it never needs to know the Mac's screen size, and the host
@@ -12,18 +12,25 @@
 //! the page recognises the gestures and sends relative moves, clicks,
 //! button presses for drags, and scrolls.
 //!
+//! Keyboard input comes in two kinds as well. Typed characters arrive as
+//! text and are entered as text, so the Mac never has to work out which
+//! keys and which layout would produce them. Keys that are not characters
+//! (enter, arrows, escape) and shortcuts (Cmd+C) arrive as a key plus the
+//! modifiers held with it, and are pressed as keys.
+//!
 //! Injection runs on one dedicated thread that owns the `Enigo` handle. The
 //! data channel callbacks only parse and forward events, so they never block
 //! on the OS, and every session shares the same injector.
 
 use std::sync::mpsc;
 
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Mouse, Settings};
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde::Deserialize;
 
-/// One pointer event from the viewer, as JSON on the input data channel,
-/// for example `{"type":"down","x":0.5,"y":0.25}` or
-/// `{"type":"click","button":"right"}`.
+/// One input event from the viewer, as JSON on the input data channel,
+/// for example `{"type":"down","x":0.5,"y":0.25}`,
+/// `{"type":"click","button":"right"}` or
+/// `{"type":"key","key":"c","mods":["meta"]}`.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputEvent {
@@ -42,6 +49,16 @@ pub enum InputEvent {
     /// Scroll by a distance, in frame fractions, in the direction the
     /// fingers moved (content follows the fingers, as on a phone).
     Scroll { dx: f64, dy: f64 },
+    /// Characters the viewer typed, entered as they are.
+    Text { text: String },
+    /// One key pressed and released with the modifiers held around it.
+    /// The whole combination is one message, so no modifier is ever left
+    /// held on the Mac between messages.
+    Key {
+        key: KeyName,
+        #[serde(default)]
+        mods: Vec<Modifier>,
+    },
     /// Sent by the host itself, never by the viewer, when an input channel
     /// closes. A viewer that disconnects mid-drag never sends its "up", and
     /// without this the button would stay held down on the Mac.
@@ -61,6 +78,68 @@ impl MouseButton {
         match self {
             MouseButton::Left => Button::Left,
             MouseButton::Right => Button::Right,
+        }
+    }
+}
+
+/// A key, named as the browser names it (`KeyboardEvent.key`), so the page
+/// forwards the name unchanged. Only the keys below are accepted, and a
+/// message with any other name is rejected when it is parsed. A single
+/// character (`"c"`) is the key that types it, for shortcuts.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct KeyName(Key);
+
+impl TryFrom<String> for KeyName {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        let key = match name.as_str() {
+            "Enter" => Key::Return,
+            "Backspace" => Key::Backspace,
+            // Forward delete, which macOS laptops type as fn+delete.
+            "Delete" => Key::Delete,
+            "Tab" => Key::Tab,
+            "Escape" => Key::Escape,
+            " " => Key::Space,
+            "ArrowUp" => Key::UpArrow,
+            "ArrowDown" => Key::DownArrow,
+            "ArrowLeft" => Key::LeftArrow,
+            "ArrowRight" => Key::RightArrow,
+            "Home" => Key::Home,
+            "End" => Key::End,
+            "PageUp" => Key::PageUp,
+            "PageDown" => Key::PageDown,
+            _ => {
+                let mut chars = name.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) if c != '\0' => Key::Unicode(c),
+                    _ => return Err(format!("unknown key {name:?}")),
+                }
+            }
+        };
+        Ok(KeyName(key))
+    }
+}
+
+/// The modifiers the viewer can hold with a key, named as the browser's
+/// `KeyboardEvent` flags name them (`metaKey` is Command on a Mac).
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Modifier {
+    Shift,
+    Control,
+    Alt,
+    Meta,
+}
+
+impl Modifier {
+    fn to_enigo(self) -> Key {
+        match self {
+            Modifier::Shift => Key::Shift,
+            Modifier::Control => Key::Control,
+            Modifier::Alt => Key::Option,
+            Modifier::Meta => Key::Meta,
         }
     }
 }
@@ -185,6 +264,11 @@ impl Injector {
                     self.enigo.smooth_scroll(step_x, Axis::Horizontal)?;
                 }
             }
+            // enigo posts text as one keyboard event carrying the string,
+            // with every modifier flag cleared, so it types exactly these
+            // characters whatever the Mac's keyboard layout is.
+            InputEvent::Text { text } => self.enigo.text(&text)?,
+            InputEvent::Key { key, mods } => self.key_combo(key, &mods)?,
             InputEvent::Reset => {
                 for button in std::mem::take(&mut self.held) {
                     self.enigo.button(button.to_enigo(), Direction::Release)?;
@@ -206,6 +290,32 @@ impl Injector {
         self.enigo.button(button.to_enigo(), Direction::Release)?;
         self.held.retain(|&b| b != button);
         Ok(())
+    }
+
+    /// Presses the modifiers, clicks the key, then releases the modifiers
+    /// in reverse order. enigo remembers which modifiers are down and sets
+    /// them as flags on the key's event, which is what makes Cmd+C a copy.
+    /// Every modifier that went down is released even if a later step
+    /// fails, because a Command key stuck down on the Mac would turn every
+    /// local keypress into a shortcut.
+    fn key_combo(&mut self, key: KeyName, mods: &[Modifier]) -> Result<(), enigo::InputError> {
+        let mut pressed = Vec::new();
+        let mut result = Ok(());
+        for &m in mods {
+            result = self.enigo.key(m.to_enigo(), Direction::Press);
+            if result.is_err() {
+                break;
+            }
+            pressed.push(m);
+        }
+        if result.is_ok() {
+            result = self.enigo.key(key.0, Direction::Click);
+        }
+        for m in pressed.into_iter().rev() {
+            let released = self.enigo.key(m.to_enigo(), Direction::Release);
+            result = result.and(released);
+        }
+        result
     }
 }
 
@@ -344,5 +454,33 @@ mod tests {
         assert!(matches!(event, InputEvent::Scroll { .. }));
         assert!(serde_json::from_str::<InputEvent>(r#"{"type":"reset"}"#).is_err());
         assert!(serde_json::from_str::<InputEvent>(r#"{"type":"click","button":"middle"}"#).is_err());
+    }
+
+    #[test]
+    fn parses_keyboard_json() {
+        let event: InputEvent = serde_json::from_str(r#"{"type":"text","text":"Hi!"}"#).unwrap();
+        assert!(matches!(event, InputEvent::Text { text } if text == "Hi!"));
+        // A named key without modifiers: mods defaults to empty.
+        let event: InputEvent = serde_json::from_str(r#"{"type":"key","key":"Enter"}"#).unwrap();
+        assert!(
+            matches!(event, InputEvent::Key { key, mods } if key == KeyName(Key::Return) && mods.is_empty())
+        );
+        // A shortcut: one character plus modifiers.
+        let event: InputEvent =
+            serde_json::from_str(r#"{"type":"key","key":"z","mods":["meta","shift"]}"#).unwrap();
+        assert!(matches!(event, InputEvent::Key { key, mods }
+            if key == KeyName(Key::Unicode('z')) && mods == vec![Modifier::Meta, Modifier::Shift]));
+    }
+
+    #[test]
+    fn rejects_unknown_keys() {
+        for json in [
+            r#"{"type":"key","key":"F13"}"#,
+            r#"{"type":"key","key":"ab"}"#,
+            r#"{"type":"key","key":""}"#,
+            r#"{"type":"key","key":"a","mods":["fn"]}"#,
+        ] {
+            assert!(serde_json::from_str::<InputEvent>(json).is_err(), "{json}");
+        }
     }
 }

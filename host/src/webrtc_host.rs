@@ -187,7 +187,7 @@ async fn start_session(
         println!("input channel open");
         Box::pin(async {})
     }));
-    // Each message is one pointer event as JSON (see input.rs). It is handed
+    // Each message is one input event as JSON (see input.rs). It is handed
     // to the injector thread rather than injected here, so this callback
     // never waits on the OS. A send only fails when input is disabled.
     let to_injector = input.clone();
