@@ -333,6 +333,22 @@ before `main` (this one: `v3-input`).
     because the hidden field shows nothing and the host does not print
     each message, so the next change is to show the typed text above the
     keyboard on the page.
+18. Oct 13 to 14, keyboard committed straight to main (24f6680). From here
+    each step follows a team-style flow: an issue, a branch created from
+    it, a PR. First one is issue #7, stricter CI, on branch `ci-hardening`.
+    Three commits so the review stays readable: `cargo fmt` alone (layout
+    only, 4 files), then the 3 clippy fixes (two nested `if`s collapsed
+    into edition 2024 `if let ... && let ...`, and `chunks_exact(4)`
+    replaced by `as_chunks::<4>()` so each pixel is a `[u8; 4]`), then
+    the workflow: `cargo fmt --check`, `cargo clippy --all-targets -D
+    warnings`, `govulncheck`, and a concurrency group that cancels a PR's
+    older run when a new commit is pushed (main runs are never cancelled).
+    Running govulncheck locally before adding it found 6 reachable
+    standard library bugs in Go 1.27.1 (net/http, through
+    `ListenAndServe`), fixed in 1.27.2; gorilla/websocket was clean. CI was
+    also installing Go 1.22, the go.mod minimum and long out of support,
+    so the scan would have failed on bugs that will never be fixed there.
+    CI now uses the latest stable Go instead.
 
 ## Mistakes worth remembering
 
@@ -381,7 +397,7 @@ before `main` (this one: `v3-input`).
 ## Still to do
 
 - Keyboard input: show typed text above the keyboard; test through the VPS.
-- Workflow: stricter CI (rustfmt, clippy, govulncheck), branch protection,
+- Workflow: stricter CI (in review, issue #7), branch protection,
   version tags and releases (v0.3.0 at the end of v3), Dependabot, client
   tests in CI, then a deploy pipeline.
 - Destroy the test server and rotate the token when finished.

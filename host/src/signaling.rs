@@ -28,11 +28,19 @@ pub struct IceServerConfig {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SignalMessage {
-    Config { ice_servers: Vec<IceServerConfig> },
+    Config {
+        ice_servers: Vec<IceServerConfig>,
+    },
     #[serde(rename = "viewer-joined")]
     ViewerJoined,
-    Offer { sdp: String, session: u32 },
-    Answer { sdp: String, session: u32 },
+    Offer {
+        sdp: String,
+        session: u32,
+    },
+    Answer {
+        sdp: String,
+        session: u32,
+    },
 }
 
 /// Errors that can cross threads. The host runs signaling on its own tokio
@@ -51,11 +59,16 @@ pub struct SignalingClient {
 /// from `openssl rand -hex 16` always qualifies.
 pub fn host_url(server: &str, token: Option<&str>) -> Result<String, String> {
     if !(server.starts_with("ws://") || server.starts_with("wss://")) {
-        return Err(format!("server must start with ws:// or wss://, got {server:?}"));
+        return Err(format!(
+            "server must start with ws:// or wss://, got {server:?}"
+        ));
     }
     let mut url = format!("{}/ws?role=host", server.trim_end_matches('/'));
     if let Some(token) = token.filter(|t| !t.is_empty()) {
-        if !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err("token may only contain letters, digits, '-' and '_'".into());
         }
         url.push_str("&token=");
@@ -81,10 +94,10 @@ impl SignalingClient {
     /// treated as an error -- the websocket protocol sends those on its own.
     pub async fn recv(&mut self) -> Result<SignalMessage, BoxError> {
         while let Some(msg) = self.socket.next().await {
-            if let Message::Text(text) = msg? {
-                if let Ok(signal) = serde_json::from_str(&text) {
-                    return Ok(signal);
-                }
+            if let Message::Text(text) = msg?
+                && let Ok(signal) = serde_json::from_str(&text)
+            {
+                return Ok(signal);
             }
         }
         Err("signaling connection closed before a message arrived".into())
