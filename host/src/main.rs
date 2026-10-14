@@ -66,7 +66,7 @@ impl SCStreamOutputTrait for Handler {
 fn bgra_to_rgba(src: &[u8], width: usize, height: usize, stride: usize) -> Frame {
     let mut rgba = Vec::with_capacity(width * height * 4);
     for row in src.chunks(stride).take(height) {
-        for px in row[..width * 4].chunks_exact(4) {
+        for px in row[..width * 4].as_chunks::<4>().0 {
             rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
         }
     }

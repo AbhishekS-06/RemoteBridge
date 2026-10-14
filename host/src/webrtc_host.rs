@@ -231,13 +231,13 @@ async fn start_session(
         println!("ice connection state: {state}");
         let pc_weak = pc_weak.clone();
         Box::pin(async move {
-            if state == RTCIceConnectionState::Connected {
-                if let Some(pc) = pc_weak.upgrade() {
-                    let dtls = pc.sctp().transport();
-                    let ice = dtls.ice_transport();
-                    if let Some(pair) = ice.get_selected_candidate_pair().await {
-                        println!("selected pair: {pair}");
-                    }
+            if state == RTCIceConnectionState::Connected
+                && let Some(pc) = pc_weak.upgrade()
+            {
+                let dtls = pc.sctp().transport();
+                let ice = dtls.ice_transport();
+                if let Some(pair) = ice.get_selected_candidate_pair().await {
+                    println!("selected pair: {pair}");
                 }
             }
         })

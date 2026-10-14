@@ -94,10 +94,10 @@ impl SignalingClient {
     /// treated as an error -- the websocket protocol sends those on its own.
     pub async fn recv(&mut self) -> Result<SignalMessage, BoxError> {
         while let Some(msg) = self.socket.next().await {
-            if let Message::Text(text) = msg? {
-                if let Ok(signal) = serde_json::from_str(&text) {
-                    return Ok(signal);
-                }
+            if let Message::Text(text) = msg?
+                && let Ok(signal) = serde_json::from_str(&text)
+            {
+                return Ok(signal);
             }
         }
         Err("signaling connection closed before a message arrived".into())
