@@ -146,8 +146,8 @@ To update a running server after changing `signaling/` or `client/`, copy
 again from the laptop, then rebuild and restart on the server. The host and
 the server speak the same protocol, so update the server whenever the host
 changes how it signals. The `--exclude` keeps a binary built on the Mac
-(macOS, arm64) from overwriting the server's Linux one. Run `go build` on
-the server, not the laptop, and check the host prints `viewer joined` after
+(macOS, arm64) from overwriting the server's Linux one. Build a Linux
+binary (below), not a Mac one, and check the host prints `viewer joined` after
 the restart: an old binary still accepts connections, it just never sends
 that message.
 
@@ -157,6 +157,42 @@ ssh <user>@<server-ip>
 cd ~/remotebridge/signaling && go build -o remotebridge-signaling .
 sudo systemctl restart remotebridge-signaling
 ```
+
+The server's packaged Go can be old (the Vultr instance has 1.22, out of
+support). Either build on the Mac with a pinned toolchain and copy the
+binary over:
+
+```
+cd signaling && GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/remotebridge-signaling .
+scp /tmp/remotebridge-signaling <user>@<server-ip>:remotebridge/signaling/
+```
+
+or use the Docker image below, which pins Go in `signaling/Dockerfile`.
+
+### 7b. Alternative: run the published image
+
+Each version tag (`v0.4.0`) publishes
+`ghcr.io/abhisheks-06/remotebridge-signaling:0.4.0` (and `latest`), with the
+viewer page inside. This replaces the copy-and-build steps above; Caddy
+and coturn stay as they are. Not yet used on the VPS.
+
+```
+sudo apt install -y docker.io
+sudo systemctl disable --now remotebridge-signaling   # if the binary was set up before
+sudo docker run -d --name remotebridge-signaling --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -e REMOTEBRIDGE_TOKEN=<TOKEN> \
+  -e REMOTEBRIDGE_TURN_HOST=<server-ip>:3478 \
+  -e REMOTEBRIDGE_TURN_SECRET=<TURN_SECRET> \
+  ghcr.io/abhisheks-06/remotebridge-signaling:0.4.0
+```
+
+`-p 127.0.0.1:8080:8080` keeps the port on localhost, as the systemd unit
+did, so only Caddy reaches it. To update, remove the container
+(`sudo docker rm -f remotebridge-signaling`) and run the same command with
+the new version; to roll back, run it with the old one. The package must
+be public (GitHub, Packages, package settings) or the server must log in
+to ghcr.io first.
 
 ## 8. Configure Caddy
 
