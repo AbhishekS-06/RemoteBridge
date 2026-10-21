@@ -203,6 +203,23 @@ RUST_LOG=webrtc_dtls=debug,webrtc=debug cargo run -- webrtc ...   # library logs
   time), not just that the service is up. Status text in a UI should
   report the layer it actually observed.
 
+### 11. Backspace leaves a literal opening bracket in the typing echo
+
+- **Symptom:** Typing `a[` and pressing Backspace shows `a[[Backspace]`
+  instead of `a` in the phone's feedback strip.
+- **Diagnosis:** Reproduced with the full page script and a fake input
+  channel, both directly through `sendInput` and through the hidden
+  field's input events.
+- **Cause:** The echo treated every entry starting with `[` as a named
+  key label. A literal typed `[` also meets that condition.
+- **Fix:** Recognise character entries by their Unicode code-point count
+  (one); bracketed key labels contain several characters. Added regression
+  checks to `tests/client-echo.test.cjs`; all 15 harness checks pass.
+- **Lesson:** Text and display labels can overlap. Include the delimiter
+  itself in tests when using formatting to distinguish them.
+- **Later:** the echo was removed on Oct 21 after the iPhone test (process
+  log item 22), so this code is no longer in the page.
+
 ## Provider choice (not a bug, but it cost time)
 
 - **Azure for Students:** every small VM size returned

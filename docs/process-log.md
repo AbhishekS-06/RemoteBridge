@@ -349,6 +349,62 @@ before `main` (this one: `v3-input`).
     also installing Go 1.22, the go.mod minimum and long out of support,
     so the scan would have failed on bugs that will never be fixed there.
     CI now uses the latest stable Go instead.
+19. Oct 20, branch protection on main (a GitHub ruleset, set in Settings
+    after step 2 so the required check names were final): a PR is required
+    to change main, both CI jobs (`Signaling server (Go)` and `Host agent
+    (Rust, macOS)`) must pass, force pushes are blocked, merges are squash
+    only, and merged branches are deleted automatically. Direct commits to
+    main, like the keyboard commit in item 18, are no longer possible.
+20. Oct 20, issue #9 on branch `typing-echo`: a strip above the phone's
+    keyboard shows what has been sent. It is filled from `sendInput`, after
+    the message is queued for sending. This does not confirm receipt or
+    insertion on the host. Backspace deletes the last echoed character, as it does
+    on the Mac. iOS does not shrink the page when the keyboard opens, so a
+    strip fixed to the bottom would sit behind the keyboard; it is placed
+    from `visualViewport` instead. The echo logic is a pure function
+    (`echoAfter`), checked with a Node harness (8 cases).
+    I first told the user the change could only be tested on the iPhone.
+    That was wrong: headless Chrome (puppeteer-core) with a phone-sized
+    screen, a fake input channel and a faked keyboard-height
+    `visualViewport` checks everything but the real iOS keyboard. The
+    simulation found a bug the harness could not: the page has no viewport
+    meta tag, so a phone lays it out about 980px wide and zooms out to
+    about 0.4, and the strip's 14px text came out around 6px. The font is
+    now divided by `visualViewport.scale`. The strip also covered the `kbd`
+    button when no on-screen keyboard was up, so it ignores taps.
+
+21. Oct 20, Codex took over the existing `typing-echo` work. Reviewed the
+    implementation, history, deployment notes and issue #9. Go vet/race
+    tests, Rust formatting, all 8 Rust tests and Clippy passed. Added a
+    dependency-free Node harness in `tests/client-echo.test.cjs` that runs
+    the full page script with DOM and transport stubs. It reproduced a
+    bug: a literal `[` could not be removed from the echo by Backspace,
+    because it was mistaken for a bracketed key label. Single-character
+    entries are now distinguished from labels by their character count.
+    All 15 harness checks pass. A headless Chrome phone simulation also
+    passed typing/backspace/Enter, readable text at the page's default
+    zoom, positioning above a simulated keyboard, hide/reopen/reset, and
+    disconnected sends. This does not replace a real iOS keyboard test.
+    Corrected the echo description: queuing a send is not a host receipt
+    acknowledgement. The VPS was reachable but rejected the available
+    SSH key, so deployment and the iPhone-through-VPS test remain pending.
+22. Oct 21, real iPhone test through the VPS: typing reached TextEdit on
+    the Mac, which closes the last v3 test. The echo strip itself looked out
+    of place over the video (monospace green text with `[Backspace]`
+    labels). Neither iOS nor Android echoes typed text on its own; the OS
+    only shows text in a visible field, and ours is a hidden 1px field that
+    resets after every character. Remote desktop apps rely on the remote
+    screen as feedback, and that already works here. The echo was removed
+    (page, README section and Node harness reverted) and issue #9 closed as
+    not planned. Lesson: try a UI idea on the real device before polishing
+    and testing it; the harness and headless checks proved the strip
+    worked, not that it was wanted.
+    Setup the same day: SSH key login with the passphrase in the macOS
+    Keychain (`ssh rb`), password login disabled on the VPS (a cloud-init
+    drop-in, `sshd_config.d/50-cloud-init.conf`, re-enabled it and had to
+    be changed too), and the token kept in the Keychain and loaded from
+    `~/.zshrc`. My mistake: I gave long commands that wrapped when copied,
+    so they split across lines and half-ran; commands are now one line each.
 
 ## Mistakes worth remembering
 
@@ -396,9 +452,7 @@ before `main` (this one: `v3-input`).
 
 ## Still to do
 
-- Keyboard input: show typed text above the keyboard; test through the VPS.
-- Workflow: stricter CI (in review, issue #7), branch protection,
-  version tags and releases (v0.3.0 at the end of v3), Dependabot, client
+- Workflow: version tags and releases (v0.3.0 at the end of v3), Dependabot, client
   tests in CI, then a deploy pipeline.
 - Destroy the test server and rotate the token when finished.
 - v3: input forwarding. v4: pairing and multi-device. v5: native client,
