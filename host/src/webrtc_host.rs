@@ -7,6 +7,11 @@
 //! Every time a viewer joins (including a page reload), the host starts a
 //! new session: a fresh peer connection and a fresh offer. The video track
 //! outlives sessions, so the capture loop never has to know about them.
+//!
+//! An answer is only applied if it comes from a paired device (see
+//! pairing.rs). Otherwise the host prints the pairing code and waits for
+//! the user to approve it on stdin; until then the peer connection has no
+//! remote description, so nothing flows.
 
 use std::sync::Arc;
 
@@ -19,6 +24,7 @@ use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::certificate::RTCCertificate;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -26,7 +32,10 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
+use tokio::io::AsyncBufReadExt;
+
 use crate::input::{InputEvent, InputSender};
+use crate::pairing::{self, PairedDevices};
 use crate::signaling::{BoxError, IceServerConfig, SignalMessage, SignalingClient};
 
 /// The one video track every session sends. A track can be bound to
@@ -56,7 +65,24 @@ pub async fn run_sessions(
     force_relay: bool,
     video_track: Arc<TrackLocalStaticSample>,
     input: InputSender,
+    certificate: RTCCertificate,
+    mut paired: PairedDevices,
 ) -> Result<(), BoxError> {
+    let host_fp = pairing::certificate_fingerprint(&certificate)?;
+    println!("host fingerprint: {host_fp}");
+    // Lines typed into the host's terminal, for approving new devices. A
+    // task reads them so the loop below can wait on stdin and signaling at
+    // once.
+    let (line_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = stdin.next_line().await {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
     // The server sends its ICE servers first, before anything else. Wait for
     // them here because every peer connection needs them at construction.
     let server_ice = loop {
@@ -72,10 +98,36 @@ pub async fn run_sessions(
     // to the wrong peer connection.
     let mut session: u32 = 0;
     let mut current: Option<Arc<RTCPeerConnection>> = None;
+    // An answer from an unpaired device, held until the user decides:
+    // (session, answer SDP, viewer fingerprint).
+    let mut pending: Option<(u32, String, String)> = None;
     println!("waiting for a viewer...");
     loop {
-        match signaling.recv().await? {
+        let message = tokio::select! {
+            message = signaling.recv() => message?,
+            Some(line) = lines.recv() => {
+                let Some((pending_session, sdp, viewer_fp)) = pending.take() else {
+                    continue;
+                };
+                // A newer viewer replaced this one while the prompt was up.
+                let Some(pc) = current.as_ref().filter(|_| pending_session == session) else {
+                    continue;
+                };
+                if line.trim().eq_ignore_ascii_case("y") {
+                    paired.add(&viewer_fp)?;
+                    println!("device paired");
+                    apply_answer(pc, sdp, session).await;
+                } else {
+                    println!("device rejected");
+                    let _ = pc.close().await;
+                    current = None;
+                }
+                continue;
+            }
+        };
+        match message {
             SignalMessage::ViewerJoined => {
+                pending = None;
                 // The old viewer is gone (the server keeps one viewer), so
                 // close its connection now instead of waiting ~30 s for ICE
                 // to time out. Closing also unbinds the video track and
@@ -91,6 +143,7 @@ pub async fn run_sessions(
                     force_relay,
                     &video_track,
                     &input,
+                    &certificate,
                     session,
                 )
                 .await
@@ -104,12 +157,20 @@ pub async fn run_sessions(
                 session: answered,
             } if answered == session => {
                 let Some(pc) = &current else { continue };
-                let result = match RTCSessionDescription::answer(sdp) {
-                    Ok(answer) => pc.set_remote_description(answer).await,
-                    Err(e) => Err(e),
+                let Some(viewer_fp) = pairing::fingerprint_from_sdp(&sdp) else {
+                    println!("session {session}: answer has no usable fingerprint");
+                    continue;
                 };
-                if let Err(e) = result {
-                    println!("session {session}: bad answer: {e}");
+                if paired.contains(&viewer_fp) {
+                    println!("session {session}: paired device");
+                    apply_answer(pc, sdp, session).await;
+                } else {
+                    println!(
+                        "session {session}: new device, pairing code {}",
+                        pairing::pairing_code(&host_fp, &viewer_fp)
+                    );
+                    println!("check it matches the code on the device, then approve? [y/N]");
+                    pending = Some((session, sdp, viewer_fp));
                 }
             }
             SignalMessage::Answer {
@@ -124,6 +185,16 @@ pub async fn run_sessions(
     }
 }
 
+async fn apply_answer(pc: &RTCPeerConnection, sdp: String, session: u32) {
+    let result = match RTCSessionDescription::answer(sdp) {
+        Ok(answer) => pc.set_remote_description(answer).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        println!("session {session}: bad answer: {e}");
+    }
+}
+
 /// Builds one session's peer connection and sends its offer. The answer is
 /// not awaited here: it arrives later through `run_sessions`, which may see
 /// another viewer join first.
@@ -133,6 +204,7 @@ async fn start_session(
     force_relay: bool,
     video_track: &Arc<TrackLocalStaticSample>,
     input: &InputSender,
+    certificate: &RTCCertificate,
     session: u32,
 ) -> Result<Arc<RTCPeerConnection>, BoxError> {
     let mut media_engine = MediaEngine::default();
@@ -173,6 +245,9 @@ async fn start_session(
         } else {
             RTCIceTransportPolicy::All
         },
+        // The saved certificate, so paired viewers see the same fingerprint
+        // every session instead of a fresh one per connection.
+        certificates: vec![certificate.clone()],
         ..Default::default()
     };
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);

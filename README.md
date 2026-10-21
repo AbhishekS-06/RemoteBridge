@@ -19,7 +19,7 @@ a phone. No third-party remote desktop service is involved.
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
 | v3 | Input forwarding over data channels, touch mapping | Done (v0.3.0): trackpad-style touch and the on-screen keyboard work from the iPhone through the VPS |
-| v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
+| v4 | DTLS fingerprint pairing, several paired devices (one active at a time) | In progress: pairing written |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
 **What works today:** the Mac's screen appears in a browser through a
@@ -119,6 +119,7 @@ RemoteBridge/
     src/signaling.rs     WebSocket client, Offer and Answer messages
     src/webrtc_host.rs   peer connection, video track, input data channel,
                          offer/answer handshake
+    src/pairing.rs       host certificate, pairing code, paired devices
     src/input.rs         input messages, frame-to-screen mapping, enigo
                          injector thread (mouse and keyboard)
     .cargo/config.toml   Swift library path and rpath (Command Line Tools only)
@@ -128,7 +129,8 @@ RemoteBridge/
   client/              Browser viewer
     index.html           page, video, WebRTC setup; wires events to input.mjs
     input.mjs            touch/mouse gestures and keys to input messages (no DOM)
-  tests/client/        Node tests for client/input.mjs
+    pairing.mjs          SDP fingerprint, pairing code, SHA-256 (no DOM)
+  tests/client/        Node tests for client/input.mjs and client/pairing.mjs
   docs/diagrams/       Diagram sources (.mmd) and the rendered PNGs shown above
   docs/deploy.md       Step-by-step VPS deployment of signaling and coturn
   docs/process-log.md  How the project was built: decisions, detours, mistakes
@@ -170,6 +172,12 @@ RemoteBridge/
    cargo run -- webrtc
    ```
 
+The first time a device connects, the page and the host terminal both show
+a pairing code such as `3ES8-F2PT-1MEY`. Check that they match and type `y`
+in the host terminal. Nothing is sent to the device before that. The host
+remembers it (`~/.remotebridge/paired.json`), so later connections from the
+same browser start right away. See Security for what this protects.
+
 At startup the host prints `input ready, display WxH points` (the Mac's
 screen size in points). It prints `peer connection state: connected` once
 the viewer answers, then `input channel open`. On a touchscreen the video
@@ -204,9 +212,10 @@ couple of seconds.
 |---|---|
 | Signaling server | `cd signaling && go test ./...` |
 | Host agent | `cd host && cargo test` |
-| Viewer input logic | `node --test tests/client/*.test.mjs` (Node 20+, no packages) |
+| Viewer logic | `node --test tests/client/*.test.mjs` (Node 20+, no packages) |
 
-The viewer tests cover gestures, keys and the phone keyboard field. A real
+The viewer tests cover gestures, keys, the phone keyboard field and the
+pairing code (the host and page tests share one code vector). A real
 phone is still needed for the browser and OS parts: the on-screen keyboard,
 pointer events and the WebRTC connection.
 
@@ -343,9 +352,23 @@ https://signal.example.com/?token=<secret>
   open server publicly while the host is running.
 - Over plain `ws://` the token travels in clear text. For a public server,
   put TLS in front of it and use `wss://`; the host supports `wss://`.
+- The signaling server is not trusted with the connection. It relays the
+  SDPs, which name each side's DTLS certificate, so a hostile server could
+  swap them and sit in the middle. Pairing stops that: the host and each
+  browser keep a fixed certificate, and on first contact both show a code
+  derived from the two fingerprints as each side saw them. A swap makes the
+  codes differ. The host applies a viewer's answer only after the user
+  approves the code, or if the fingerprint was approved before. The page in
+  turn refuses a host whose key differs from the one it paired with.
+- The code is 60 bits (12 characters), not 6 digits: a relay can generate
+  keys until a short code matches, which takes about a million tries for 6
+  digits.
+- The host's private key is `~/.remotebridge/host-cert.pem` (owner-only).
+  Deleting the directory resets the host key and all pairings.
 - The viewer's token is in the page URL, so it can end up in browser history
-  and server logs. This is a stopgap. DTLS fingerprint pairing and
-  per-device tokens are planned for v4. No custom cryptography is used.
+  and server logs. It only controls who can reach the server; an unpaired
+  device that has it still gets nothing. No custom cryptography is used
+  (SHA-256 and the WebRTC DTLS certificates).
 
 ## Known limitations
 
@@ -368,4 +391,9 @@ https://signal.example.com/?token=<secret>
   arrives, even when its WebSocket is connected and only the host is
   missing.
 - One viewer at a time, main display only, macOS host only.
+- Pairing is approved on the host's terminal, so the host must be run from a
+  terminal someone can reach. A rejected device's page keeps showing the
+  code until ICE gives up.
+- Clearing the browser's site data forgets its key; that browser has to be
+  paired again.
 - No audio and no automatic reconnect.

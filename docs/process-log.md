@@ -457,6 +457,45 @@ before `main` (this one: `v3-input`).
     65532, and the image has no shell. Dependabot also watches the
     Dockerfile's base images now. Not yet run on the VPS.
 
+## v4: pairing and multi-device (Oct 21, in progress)
+
+Planned with the user first. Decisions: several devices can be paired but
+only one is active at a time (a new one takes over, as with reloads);
+unapproved devices get nothing; Google sign-in, which would replace the
+shared token, is its own later version. Per-role tokens were dropped from
+v4 because sign-in would throw them away.
+
+1. Oct 21, pairing. The threat: the signaling server relays both SDPs, and
+   each SDP names the DTLS certificate its side will present, so a server
+   that swapped them could sit in the middle of the "end to end" encryption.
+   Fix without trusting the server:
+   - The host keeps one certificate in `~/.remotebridge/host-cert.pem`
+     (0600, `REMOTEBRIDGE_HOME` overrides the directory), the browser keeps
+     one in IndexedDB (an RTCCertificate can be stored directly, the private
+     key stays inside the browser). Fingerprints are then stable.
+   - First connection: both sides derive a code from the two fingerprints as
+     each saw them. A swap makes the codes differ. The host prints the code
+     and asks `[y/N]` on its terminal; until `y`, it never applies the
+     viewer's answer, so no media or input can flow. `y` saves the viewer's
+     fingerprint in `paired.json`; later sessions skip the prompt.
+   - The page saves the host's fingerprint once connected and refuses a
+     different one later (SSH-style), with a button to forget it.
+   - The DTLS handshake already checks that each certificate matches its
+     SDP fingerprint, so a saved fingerprint means the paired device's key.
+   I first proposed a 6-digit code; corrected before writing it. A relay
+   can pick its own keys, see the viewer's fingerprint, then try about a
+   million keys until the host's code matches. The code is 60 bits instead
+   (12 Crockford base32 characters).
+   SHA-256 is written out in `client/pairing.mjs` because `crypto.subtle`
+   only exists on https or localhost pages, and the LAN page is plain http.
+   Tests: 4 Rust (`pairing.rs`, shared code vector), 4 Node (SHA-256 against
+   Node's for lengths 0 to 199, same vector). End to end with the real host,
+   local signaling and headless Chrome through the DevTools protocol: new
+   device shows the same code on both sides and waits; `y` connects and the
+   page saves the host key; reload connects without a prompt; a second
+   profile answered `n` never connects; a host with a new key is refused by
+   the page.
+
 ## Mistakes worth remembering
 
 - Recommending a provider offer from memory without checking it was current.

@@ -11,6 +11,7 @@ use webrtc::media::Sample;
 
 mod encoder;
 mod input;
+mod pairing;
 mod signaling;
 mod webrtc_host;
 
@@ -292,9 +293,21 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Viewer touches arrive as fractions of this frame size; the injector
     // maps them back onto the screen.
     let input = input::start_injector(CAPTURE_WIDTH, CAPTURE_HEIGHT);
+    let state_dir = pairing::state_dir().map_err(|e| e as Box<dyn std::error::Error>)?;
+    let certificate = pairing::load_or_create_certificate(&state_dir)
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
+    let paired =
+        pairing::PairedDevices::load(&state_dir).map_err(|e| e as Box<dyn std::error::Error>)?;
     tokio::spawn(async move {
-        if let Err(e) =
-            webrtc_host::run_sessions(signaling, force_relay, session_track, input).await
+        if let Err(e) = webrtc_host::run_sessions(
+            signaling,
+            force_relay,
+            session_track,
+            input,
+            certificate,
+            paired,
+        )
+        .await
         {
             println!("signaling stopped: {e} (restart the host to accept new viewers)");
         }

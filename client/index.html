@@ -18,6 +18,14 @@
       color: #9f9; font: 14px monospace; padding: 10px 14px;
       background: rgba(0, 0, 0, 0.6); border: 1px solid #9f9; border-radius: 6px;
     }
+    #pairing {
+      position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%);
+      z-index: 2; max-width: 90vw; text-align: center;
+      color: #9f9; font: 16px/1.5 monospace; padding: 14px 18px;
+      background: rgba(0, 0, 0, 0.85); border: 1px solid #9f9; border-radius: 6px;
+    }
+    #pairing[hidden] { display: none; }
+    #pairing .code { font-size: 28px; letter-spacing: 2px; }
     /* Invisible but focusable, so focusing it brings up the phone's
        keyboard. 16px stops Safari zooming the page in on focus. */
     #typing {
@@ -29,6 +37,7 @@
 <body>
   <video id="remote" autoplay playsinline muted></video>
   <div id="status">connecting to signaling...</div>
+  <div id="pairing" hidden></div>
   <button id="keyboard">kbd</button>
   <input id="typing" type="text" autocomplete="off" autocorrect="off"
          autocapitalize="off" spellcheck="false" aria-label="type on the remote screen">
@@ -37,6 +46,7 @@
       frameRect, framePosition, createMouse, createTrackpad,
       keyMessage, typingMessage, SENTINEL,
     } from "./input.mjs";
+    import { fingerprintFromSdp, pairingCode } from "./pairing.mjs";
 
     // The signaling server is whatever server served this page, so the same
     // file works from localhost, a LAN IP, or a VPS. wss on an https page,
@@ -52,6 +62,96 @@
     const forceRelay = params.get("relay") === "1";
     const SIGNALING_URL =
       wsProtocol + "//" + location.host + "/ws?role=viewer&token=" + encodeURIComponent(token);
+
+    // Pairing (see host/src/pairing.rs). This browser keeps one DTLS
+    // certificate in IndexedDB so the host recognises it next time, and
+    // remembers the host's fingerprint so a different key on the other end
+    // (a relay in the middle, or a reinstalled host) is refused instead of
+    // trusted. Browsers can store an RTCCertificate object directly; its
+    // private key never leaves the browser.
+    const CERT_LIFETIME_MS = 365 * 24 * 3600 * 1000;
+    const HOST_FP_KEY = "remotebridge-host-fingerprint";
+
+    function openKeyStore() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open("remotebridge", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("keys");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    function keyStoreRequest(db, mode, run) {
+      return new Promise((resolve, reject) => {
+        const request = run(db.transaction("keys", mode).objectStore("keys"));
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    // A stored certificate past its expiry is replaced, which means pairing
+    // this device again. If storing fails, the page still works but pairs
+    // as a new device every visit.
+    async function loadCertificate() {
+      let db = null;
+      try {
+        db = await openKeyStore();
+        const stored = await keyStoreRequest(db, "readonly", (s) => s.get("certificate"));
+        if (stored && stored.expires > Date.now() + 24 * 3600 * 1000) return stored;
+      } catch (e) {
+        console.warn("no stored certificate:", e);
+      }
+      const cert = await RTCPeerConnection.generateCertificate({
+        name: "ECDSA", namedCurve: "P-256", expires: CERT_LIFETIME_MS,
+      });
+      try {
+        if (db) await keyStoreRequest(db, "readwrite", (s) => s.put(cert, "certificate"));
+      } catch (e) {
+        console.warn("could not store certificate:", e);
+      }
+      return cert;
+    }
+
+    function savedHostFingerprint() {
+      try { return localStorage.getItem(HOST_FP_KEY); } catch { return null; }
+    }
+    function saveHostFingerprint(fp) {
+      try { localStorage.setItem(HOST_FP_KEY, fp); } catch { /* not remembered */ }
+    }
+
+    const pairingEl = document.getElementById("pairing");
+    function showPairing(lines, code) {
+      pairingEl.replaceChildren();
+      for (const line of lines) {
+        const div = document.createElement("div");
+        div.textContent = line;
+        pairingEl.append(div);
+      }
+      if (code) {
+        const div = document.createElement("div");
+        div.className = "code";
+        div.textContent = code;
+        pairingEl.insertBefore(div, pairingEl.children[1] || null);
+      }
+      pairingEl.hidden = false;
+    }
+
+    function showHostChanged() {
+      showPairing([
+        "The host's key is not the one this device paired with.",
+        "Someone may be intercepting the connection, or the host was reinstalled.",
+        "Not connecting.",
+      ]);
+      const forget = document.createElement("button");
+      forget.textContent = "forget the saved host and pair again";
+      forget.addEventListener("click", () => {
+        try { localStorage.removeItem(HOST_FP_KEY); } catch { /* nothing saved */ }
+        location.reload();
+      });
+      pairingEl.append(forget);
+    }
+
+    const certificate = await loadCertificate();
 
     const video = document.getElementById("remote");
     let iceServers = null;
@@ -143,6 +243,7 @@
       const peer = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }, ...serverIceServers],
         iceTransportPolicy: forceRelay ? "relay" : "all",
+        certificates: [certificate],
       });
       peer.ontrack = (event) => {
         video.srcObject = event.streams[0];
@@ -178,7 +279,15 @@
           render();
         }
       };
-      peer.onconnectionstatechange = render;
+      peer.onconnectionstatechange = () => {
+        // Connected means the host accepted this device, so the host's key
+        // is now the one to expect from here on.
+        if (peer.connectionState === "connected" && peer === pc) {
+          if (!savedHostFingerprint() && peer.hostFingerprint) saveHostFingerprint(peer.hostFingerprint);
+          pairingEl.hidden = true;
+        }
+        render();
+      };
       peer.oniceconnectionstatechange = render;
       render();
       return peer;
@@ -222,13 +331,33 @@
       // arrive while this one is still gathering (the host restarted the
       // session); checking peer === pc after each wait drops the stale one.
       if (pc) pc.close();
+      pc = null;
       inputChannel = null;
+
+      const hostFp = fingerprintFromSdp(msg.sdp);
+      const savedFp = savedHostFingerprint();
+      if (!hostFp || (savedFp && savedFp !== hostFp)) {
+        showHostChanged();
+        return;
+      }
+
       const peer = createPeerConnection(iceServers);
+      peer.hostFingerprint = hostFp;
       pc = peer;
 
       await peer.setRemoteDescription({ type: "offer", sdp: msg.sdp });
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
+      if (peer !== pc) return;
+
+      // Shown until the connection is up. A device the host already knows
+      // connects straight away, so the box only stays up while the host is
+      // asking for approval.
+      const viewerFp = fingerprintFromSdp(peer.localDescription.sdp);
+      showPairing(
+        ["Pairing code", "If the host asks, check that it shows the same code and approve it there."],
+        pairingCode(hostFp, viewerFp),
+      );
 
       answerState = "gathering";
       render();
