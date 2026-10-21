@@ -1,0 +1,32 @@
+# Weekly dependency update PRs, one grouped PR per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /host
+    schedule:
+      interval: weekly
+    groups:
+      rust:
+        patterns: ["*"]
+    # host/vendor/webrtc-dtls is a patched copy of webrtc-dtls 0.10.0 (the
+    # version webrtc 0.11 uses). A webrtc upgrade must be done by hand, so the
+    # patch can be checked and removed once upstream has the fix.
+    ignore:
+      - dependency-name: "webrtc"
+      - dependency-name: "webrtc-*"
+
+  - package-ecosystem: gomod
+    directory: /signaling
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
