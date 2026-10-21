@@ -19,8 +19,8 @@ jobs:
       run:
         working-directory: signaling
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           # Latest Go release, not the go.mod minimum (1.22, out of support):
           # govulncheck flags standard library bugs fixed only in newer Go.
@@ -44,7 +44,7 @@ jobs:
       run:
         working-directory: host
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Show Xcode and SDK
         run: xcodebuild -version && xcrun --show-sdk-version
       - name: Install FFmpeg
