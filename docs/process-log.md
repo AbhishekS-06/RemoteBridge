@@ -405,6 +405,19 @@ before `main` (this one: `v3-input`).
     be changed too), and the token kept in the Keychain and loaded from
     `~/.zshrc`. My mistake: I gave long commands that wrapped when copied,
     so they split across lines and half-ran; commands are now one line each.
+23. Oct 21, v0.3.0 tagged with a CHANGELOG (PR #10) and a GitHub Release.
+    The VPS signaling binary turned out to be built with the server's Go
+    1.22.2, which is out of support and has known net/http vulnerabilities. It is
+    now cross-compiled on the Mac (`GOTOOLCHAIN=go1.27.2 GOOS=linux
+    GOARCH=amd64 CGO_ENABLED=0 go build`) and copied over, so the server
+    needs no Go of its own. The test server stays up until v4 is tested.
+24. Oct 21, workflow step 5: Dependabot (`.github/dependabot.yml`), weekly,
+    one grouped PR per ecosystem (cargo in `host/`, gomod in `signaling/`,
+    GitHub Actions). The webrtc crates are ignored: `host/vendor/webrtc-dtls`
+    patches the exact webrtc-dtls version webrtc 0.11 uses, so a webrtc
+    bump has to be done by hand, ideally to a version that has the upstream
+    fix so the vendored copy can be deleted. Unmerged Dependabot PRs change
+    nothing on main; GitHub pauses updates if they sit unmerged for months.
 
 ## Mistakes worth remembering
 

@@ -106,6 +106,7 @@ The diagrams are static images rendered from the Mermaid sources in
 | Client | Plain HTML and JavaScript, browser `RTCPeerConnection` | Nothing to install on the phone |
 | NAT traversal (v2) | Public STUN, plus self-hosted coturn (TURN) with short-lived credentials | Direct path when possible, relay when not |
 | CI | GitHub Actions: Go fmt, vet, race-enabled tests and govulncheck on Linux; host rustfmt check, build, clippy (warnings as errors) and tests on a macOS 26 runner | The host needs ScreenCaptureKit, which only exists on macOS; the capture crate's Swift code needs the macOS 26 SDK |
+| Dependency updates | Dependabot: one grouped PR a week each for Rust crates, Go modules and GitHub Actions; webrtc crates excluded | The webrtc crates sit on a vendored, patched webrtc-dtls, so they are upgraded by hand |
 | Deploy (planned) | Docker, GitHub Actions, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
 
 ## Project layout
@@ -131,6 +132,7 @@ RemoteBridge/
   docs/debugging-log.md  Problems hit, how each was diagnosed, and the fixes
   deploy/              Example configs: coturn, systemd unit, Caddy
   .github/workflows/ci.yml  CI: Go checks, tests and vuln scan; macOS host build, lints, tests
+  .github/dependabot.yml   Weekly grouped dependency update PRs (webrtc crates excluded)
 ```
 
 ## Running it
