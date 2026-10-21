@@ -32,7 +32,12 @@
   <button id="keyboard">kbd</button>
   <input id="typing" type="text" autocomplete="off" autocorrect="off"
          autocapitalize="off" spellcheck="false" aria-label="type on the remote screen">
-  <script>
+  <script type="module">
+    import {
+      frameRect, framePosition, createMouse, createTrackpad,
+      keyMessage, typingMessage, SENTINEL,
+    } from "./input.mjs";
+
     // The signaling server is whatever server served this page, so the same
     // file works from localhost, a LAN IP, or a VPS. wss on an https page,
     // ws otherwise (browsers block ws from https pages). location.host keeps
@@ -56,31 +61,11 @@
     let answerState = "waiting for offer";
     let render = () => {};
 
-    // Input. Positions and distances go to the host as fractions (0..1) of
-    // the video frame, so this page never needs the Mac's screen size; the
-    // host maps them to screen points (host/src/input.rs). The page
-    // letterboxes the frame (object-fit: contain), so fractions are measured
-    // against the area the video is actually drawn in, not the whole element.
-    function frameRect() {
-      const vw = video.videoWidth, vh = video.videoHeight;
-      if (!vw || !vh) return null;
-      const rect = video.getBoundingClientRect();
-      const scale = Math.min(rect.width / vw, rect.height / vh);
-      return {
-        left: rect.left + (rect.width - vw * scale) / 2,
-        top: rect.top + (rect.height - vh * scale) / 2,
-        width: vw * scale,
-        height: vh * scale,
-      };
-    }
-
-    function framePosition(event) {
-      const frame = frameRect();
-      if (!frame) return null;
-      return {
-        x: (event.clientX - frame.left) / frame.width,
-        y: (event.clientY - frame.top) / frame.height,
-      };
+    // Input. The gesture and key logic lives in input.mjs, without the DOM,
+    // so it can be tested in Node; this part feeds it real events and sends
+    // what it returns.
+    function frame() {
+      return frameRect(video.videoWidth, video.videoHeight, video.getBoundingClientRect());
     }
 
     function sendInput(msg) {
@@ -90,241 +75,42 @@
       render();
     }
 
-    const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
-    function sendPosition(type, pos) {
-      sendInput({ type, x: clamp01(pos.x), y: clamp01(pos.y) });
-    }
-
-    // A mouse (a browser on a computer) points directly: the left button
-    // presses, drags and releases at the pointer's position.
-    let mouseDown = false;
-    function onMouse(event) {
-      if (event.type === "pointerdown") {
-        if (event.button !== 0) return;
-        const pos = framePosition(event);
-        // A press on the black bars around the video is not on the screen.
-        if (!pos || pos.x < 0 || pos.x > 1 || pos.y < 0 || pos.y > 1) return;
-        mouseDown = true;
-        // Keep receiving moves and the final up even if the pointer leaves
-        // the video element.
-        video.setPointerCapture(event.pointerId);
-        sendPosition("down", pos);
-        return;
-      }
-      if (!mouseDown) return;
-      const pos = framePosition(event);
-      if (event.type === "pointermove") {
-        if (pos) sendPosition("move", pos);
-        return;
-      }
-      // pointerup or pointercancel: either way the button is released.
-      mouseDown = false;
-      if (pos) sendPosition("up", pos);
-    }
-
-    // A touchscreen acts as a trackpad. Pointing directly with a finger at a
-    // phone-sized picture of the Mac's screen hides the target and lands a
-    // few points off; moving the cursor relatively does not, and the video
-    // shows the Mac's cursor, so the finger can be anywhere on the page.
-    //   one finger slides: the cursor moves the same distance
-    //   one-finger tap: left click (two quick taps: double-click)
-    //   tap, then touch again and slide: drag with the left button held
-    //   two-finger tap: right click
-    //   two fingers slide: scroll, the content following the fingers
-    const TAP_SLOP_PX = 10;        // a finger moving less than this is still tapping
-    const TAP_MAX_MS = 300;        // a touch held longer than this is not a tap
-    const DRAG_AFTER_TAP_MS = 300; // touching again this soon after a tap can drag
-    const TRACKPAD_SPEED = 1;      // cursor distance per finger distance
-
-    const touches = new Map(); // pointerId -> latest {x, y} in page pixels
-    let gesture = null;        // the current gesture, from first touch to last lift
-    let lastTapAt = 0;
-
-    // The fingers' average position. With two fingers this is what moves
-    // when they slide together.
-    function touchCentre() {
-      let x = 0, y = 0;
-      for (const t of touches.values()) { x += t.x; y += t.y; }
-      return { x: x / touches.size, y: y / touches.size };
-    }
-
-    function onTouchDown(event) {
-      if (touches.size === 0) {
-        gesture = {
-          startedAt: event.timeStamp,
-          fingers: 1,
-          travelled: 0,
-          moved: false,
-          dragArmed: event.timeStamp - lastTapAt < DRAG_AFTER_TAP_MS,
-          dragging: false,
-          last: null,
-        };
-      }
-      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
-      video.setPointerCapture(event.pointerId);
-      // Once a second finger lands the gesture stays a two-finger one until
-      // every finger has lifted, so lifting one finger first does not turn
-      // the end of a scroll into a cursor move.
-      if (touches.size >= 2 && gesture.fingers === 1) {
-        gesture.fingers = 2;
-        if (gesture.dragging) {
-          gesture.dragging = false;
-          sendInput({ type: "release", button: "left" });
-        }
-      }
-      // Measure from here, so a finger landing does not count as the
-      // centre moving.
-      gesture.last = touchCentre();
-    }
-
-    function onTouchMove(event) {
-      if (!touches.has(event.pointerId)) return;
-      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
-      const centre = touchCentre();
-      const dx = centre.x - gesture.last.x, dy = centre.y - gesture.last.y;
-      gesture.last = centre;
-      gesture.travelled += Math.hypot(dx, dy);
-      // A finger wobbles a little during a tap. Ignoring movement until it
-      // passes the slop keeps a tap's click where the cursor was.
-      if (!gesture.moved) {
-        if (gesture.travelled < TAP_SLOP_PX) return;
-        gesture.moved = true;
-      }
-      const frame = frameRect();
-      if (!frame) return;
-      const fx = dx / frame.width, fy = dy / frame.height;
-      if (gesture.fingers === 2) {
-        sendInput({ type: "scroll", dx: fx, dy: fy });
-        return;
-      }
-      if (gesture.dragArmed && !gesture.dragging) {
-        gesture.dragging = true;
-        sendInput({ type: "press", button: "left" });
-      }
-      sendInput({ type: "move_rel", dx: fx * TRACKPAD_SPEED, dy: fy * TRACKPAD_SPEED });
-    }
-
-    function onTouchUp(event) {
-      if (!touches.has(event.pointerId)) return;
-      touches.delete(event.pointerId);
-      if (touches.size > 0) {
-        gesture.last = touchCentre();
-        return;
-      }
-      const ended = gesture;
-      gesture = null;
-      if (ended.dragging) {
-        sendInput({ type: "release", button: "left" });
-        return;
-      }
-      // pointercancel means the browser took the touch for itself (an
-      // incoming call, a system gesture): never click for it.
-      if (event.type === "pointercancel") return;
-      if (ended.moved || event.timeStamp - ended.startedAt > TAP_MAX_MS) return;
-      if (ended.fingers === 2) {
-        sendInput({ type: "click", button: "right" });
-      } else {
-        sendInput({ type: "click", button: "left" });
-        lastTapAt = event.timeStamp;
-      }
-    }
-
+    const mouse = createMouse(sendInput);
+    const trackpad = createTrackpad(sendInput, frame);
     for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
       video.addEventListener(type, (event) => {
         if (event.pointerType !== "touch") {
-          onMouse(event);
+          const pos = framePosition(frame(), event.clientX, event.clientY);
+          if (mouse.handle(event, pos)) video.setPointerCapture(event.pointerId);
         } else if (type === "pointerdown") {
-          onTouchDown(event);
+          trackpad.down(event);
+          video.setPointerCapture(event.pointerId);
         } else if (type === "pointermove") {
-          onTouchMove(event);
+          trackpad.move(event);
         } else {
-          onTouchUp(event);
+          trackpad.up(event);
         }
       });
     }
 
-    // Keyboard. Characters go to the host as text ({type: "text"}) and the
-    // Mac enters them as they are. Keys that are not characters, and any key
-    // pressed with Cmd or Ctrl, go as a key name plus the modifiers held
-    // ({type: "key"}); the host accepts only the names in
-    // host/src/input.rs (KeyName).
-    const NAMED_KEYS = new Set([
-      "Enter", "Backspace", "Delete", "Tab", "Escape",
-      "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-      "Home", "End", "PageUp", "PageDown",
-    ]);
     const typing = document.getElementById("typing");
-
-    function modifiers(event) {
-      const mods = [];
-      if (event.shiftKey) mods.push("shift");
-      if (event.ctrlKey) mods.push("control");
-      if (event.altKey) mods.push("alt");
-      if (event.metaKey) mods.push("meta");
-      return mods;
-    }
-
-    // [...s] counts characters, not UTF-16 units, so an emoji is one.
-    const isCharacter = (key) => [...key].length === 1;
-
-    // The key a shortcut is on. With Shift held the browser reports the
-    // shifted character (Cmd+Shift+4 gives "$"), and the host would then
-    // look for a key that types "$". event.code names the physical key
-    // ("Digit4", "KeyZ"), which gives back the unshifted character.
-    function shortcutKey(event) {
-      const m = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(event.code);
-      if (m) return (m[1] || m[2]).toLowerCase();
-      return event.key;
-    }
-
-    // A physical keyboard (a computer, or an iPad keyboard) sends everything
-    // through keydown. While the hidden field has focus (the phone's
-    // keyboard is up), characters and backspace come from the field's input
-    // events instead, because a phone keyboard does not reliably report
-    // them as keydowns; keydown then only handles the keys that do not edit
-    // the field, and shortcuts.
     document.addEventListener("keydown", (event) => {
-      if (event.isComposing) return;
-      const inField = event.target === typing;
-      if (event.metaKey || event.ctrlKey) {
-        if (!isCharacter(event.key) && !NAMED_KEYS.has(event.key)) return;
-        sendInput({ type: "key", key: shortcutKey(event), mods: modifiers(event) });
-      } else if (NAMED_KEYS.has(event.key)) {
-        if (inField && event.key === "Backspace") return;
-        sendInput({ type: "key", key: event.key, mods: modifiers(event) });
-      } else if (isCharacter(event.key)) {
-        if (inField) return;
-        sendInput({ type: "text", text: event.key });
-      } else {
-        return; // a bare modifier, a dead key, F-keys: nothing to send
-      }
+      const msg = keyMessage(event, event.target === typing);
+      if (!msg) return;
+      sendInput(msg);
       // Keep the browser from acting on the key too: space scrolling,
       // Tab moving focus, Cmd+R reloading. Some shortcuts (Cmd+W, Cmd+Q)
       // the browser keeps for itself and never lets a page stop.
       event.preventDefault();
     });
 
-    // The phone's keyboard types into the hidden field. The field always
-    // holds one zero-width space with the caret after it, so backspace
-    // always has something to delete (on an empty field it fires no event).
-    // After each edit the field is compared with that, the difference sent,
-    // and the field put back.
-    const SENTINEL = "​";
     function resetTyping() {
       typing.value = SENTINEL;
       typing.setSelectionRange(1, 1);
     }
     typing.addEventListener("input", () => {
-      const value = typing.value;
-      if (value.startsWith(SENTINEL)) {
-        if (value.length > 1) sendInput({ type: "text", text: value.slice(1) });
-      } else if (value === "") {
-        sendInput({ type: "key", key: "Backspace", mods: [] });
-      } else {
-        // Something replaced the sentinel itself (selected and typed over):
-        // send what is there now, minus any sentinel left inside it.
-        sendInput({ type: "text", text: value.replaceAll(SENTINEL, "") });
-      }
+      const msg = typingMessage(typing.value);
+      if (msg) sendInput(msg);
       resetTyping();
     });
     typing.addEventListener("focus", resetTyping);

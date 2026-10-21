@@ -418,6 +418,23 @@ before `main` (this one: `v3-input`).
     bump has to be done by hand, ideally to a version that has the upstream
     fix so the vendored copy can be deleted. Unmerged Dependabot PRs change
     nothing on main; GitHub pauses updates if they sit unmerged for months.
+25. Oct 21, workflow step 6: viewer input logic moved out of
+    `client/index.html` into `client/input.mjs`, an ES module with no DOM
+    access (frame mapping, mouse, trackpad gestures, key and phone-field
+    messages). The page imports it (`<script type="module">`) and keeps only
+    the wiring: reading events, pointer capture, `preventDefault`, sending.
+    Behaviour is unchanged: the code moved as is, with the trackpad's state
+    inside `createTrackpad` instead of page globals. 25 tests in
+    `tests/client/input.test.mjs` use Node's built-in runner, so there is no
+    package.json and nothing to install; a new CI job, `Viewer page (JS)`,
+    runs them. `.mjs` because Node treats `.js` without a package.json as
+    CommonJS; Go's file server sends `.mjs` as `text/javascript`, which
+    browsers require for modules. Checked in headless Chrome that the page
+    loads the module and the key and field handlers still run.
+    The Oct 20 echo harness was never committed and was deleted with the
+    echo, so this is the first client test in the repo. One of my test
+    expectations was wrong (a two-finger scroll split into three messages,
+    not two); the code was right.
 
 ## Mistakes worth remembering
 
