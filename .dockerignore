@@ -1,0 +1,7 @@
+# The signaling image only needs signaling/ and client/. Keeping the rest out
+# makes the build context small (host/target alone is gigabytes).
+*
+!signaling/go.mod
+!signaling/go.sum
+!signaling/*.go
+!client/

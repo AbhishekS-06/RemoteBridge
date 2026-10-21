@@ -14,6 +14,12 @@ updates:
     ignore:
       - dependency-name: "webrtc"
       - dependency-name: "webrtc-*"
+      # Only patch updates (1.53.1 -> 1.53.3). Larger bumps can change APIs:
+      # screencapturekit 11 and tokio-tungstenite 0.30 broke the build. For a
+      # 0.x crate, 0.21 -> 0.30 is a minor bump by number but breaking in
+      # Cargo, so minor is skipped too. Those are upgraded by hand.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: gomod
     directory: /signaling
@@ -21,6 +27,15 @@ updates:
       interval: weekly
     groups:
       go:
+        patterns: ["*"]
+
+  # Base images in signaling/Dockerfile (Go toolchain, distroless).
+  - package-ecosystem: docker
+    directory: /signaling
+    schedule:
+      interval: weekly
+    groups:
+      docker:
         patterns: ["*"]
 
   - package-ecosystem: github-actions

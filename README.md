@@ -106,8 +106,8 @@ The diagrams are static images rendered from the Mermaid sources in
 | Client | Plain HTML and JavaScript, browser `RTCPeerConnection` | Nothing to install on the phone |
 | NAT traversal (v2) | Public STUN, plus self-hosted coturn (TURN) with short-lived credentials | Direct path when possible, relay when not |
 | CI | GitHub Actions: Go fmt, vet, race-enabled tests and govulncheck on Linux; viewer input tests with Node's built-in test runner; host rustfmt check, build, clippy (warnings as errors) and tests on a macOS 26 runner | The host needs ScreenCaptureKit, which only exists on macOS; the capture crate's Swift code needs the macOS 26 SDK |
-| Dependency updates | Dependabot: one grouped PR a week each for Rust crates, Go modules and GitHub Actions; webrtc crates excluded | The webrtc crates sit on a vendored, patched webrtc-dtls, so they are upgraded by hand |
-| Deploy (planned) | Docker, GitHub Actions, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
+| Dependency updates | Dependabot: one grouped PR a week each for Rust crates, Go modules, Docker base images and GitHub Actions; Rust gets patch updates only, webrtc crates excluded | The webrtc crates sit on a vendored, patched webrtc-dtls, so they are upgraded by hand |
+| Deploy | Signaling image (Go build stage, distroless run stage) published to GHCR by GitHub Actions on each version tag; planned: automatic deploy, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
 
 ## Project layout
 
@@ -124,6 +124,7 @@ RemoteBridge/
     .cargo/config.toml   Swift library path and rpath (Command Line Tools only)
   signaling/           Go relay and static file server for client/
     main.go
+    Dockerfile           image with the server and client/ (build from the repo root)
   client/              Browser viewer
     index.html           page, video, WebRTC setup; wires events to input.mjs
     input.mjs            touch/mouse gestures and keys to input messages (no DOM)
@@ -134,7 +135,8 @@ RemoteBridge/
   docs/debugging-log.md  Problems hit, how each was diagnosed, and the fixes
   deploy/              Example configs: coturn, systemd unit, Caddy
   .github/workflows/ci.yml  CI: Go checks, tests and vuln scan; viewer input tests; macOS host build, lints, tests
-  .github/dependabot.yml   Weekly grouped dependency update PRs (webrtc crates excluded)
+  .github/workflows/image.yml  Signaling image: built on PRs, published to GHCR on v* tags
+  .github/dependabot.yml   Weekly grouped dependency update PRs (Rust: patch only; webrtc crates excluded)
 ```
 
 ## Running it
@@ -207,6 +209,19 @@ couple of seconds.
 The viewer tests cover gestures, keys and the phone keyboard field. A real
 phone is still needed for the browser and OS parts: the on-screen keyboard,
 pointer events and the WebRTC connection.
+
+### Signaling server in Docker
+
+Instead of `go run .`, from the repository root:
+
+```
+docker build -f signaling/Dockerfile -t remotebridge-signaling .
+docker run --rm -p 127.0.0.1:8080:8080 -e REMOTEBRIDGE_TOKEN=<TOKEN> remotebridge-signaling
+```
+
+Published versions: `ghcr.io/abhisheks-06/remotebridge-signaling:<version>`.
+The same `REMOTEBRIDGE_*` variables configure it (`-e`). For a phone on the
+LAN, publish on all interfaces (`-p 8080:8080`).
 
 ### Host run modes
 

@@ -435,6 +435,27 @@ before `main` (this one: `v3-input`).
     echo, so this is the first client test in the repo. One of my test
     expectations was wrong (a two-finger scroll split into three messages,
     not two); the code was right.
+26. Oct 21, Dependabot's first Rust PR (#14) failed CI: screencapturekit
+    11 and tokio-tungstenite 0.30 changed their APIs. The required check
+    blocked it, as intended. Rust updates are now patch-only: for a 0.x
+    crate, 0.21 -> 0.30 is breaking in Cargo, but Dependabot calls it a
+    minor update, so ignoring only majors would not have stopped it. My
+    first version of the rule ignored only majors; caught before commit.
+    The actions PR (#13) was superseded by #17 after a rebase request,
+    because main had changed ci.yml in the meantime.
+27. Oct 21, workflow step 7a: `signaling/Dockerfile` (Go 1.27.2 build stage,
+    distroless static nonroot run stage, 15.5 MB) and
+    `.github/workflows/image.yml` (build on PRs touching the server or page;
+    build and push to ghcr.io on `v*` tags, tagged `<version>` and `latest`).
+    The image keeps the repository layout (/app/signaling next to
+    /app/client) because the server serves `../client`. Pinning Go in the
+    Dockerfile is the fix for the Go 1.22 binary found on the VPS: what runs
+    is built from the tag with a known toolchain. Docker on the Mac is
+    Colima (free, CLI only). Checked locally: page and `input.mjs` served
+    with the right types, a wrong token gets 401, a real WebSocket client
+    with the right token gets the config message, the process runs as uid
+    65532, and the image has no shell. Dependabot also watches the
+    Dockerfile's base images now. Not yet run on the VPS.
 
 ## Mistakes worth remembering
 
