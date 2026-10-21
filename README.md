@@ -105,7 +105,7 @@ The diagrams are static images rendered from the Mermaid sources in
 | Signaling server | Go, `gorilla/websocket` | Small relay, also serves the client page |
 | Client | Plain HTML and JavaScript, browser `RTCPeerConnection` | Nothing to install on the phone |
 | NAT traversal (v2) | Public STUN, plus self-hosted coturn (TURN) with short-lived credentials | Direct path when possible, relay when not |
-| CI | GitHub Actions: Go fmt, vet, race-enabled tests and govulncheck on Linux; host rustfmt check, build, clippy (warnings as errors) and tests on a macOS 26 runner | The host needs ScreenCaptureKit, which only exists on macOS; the capture crate's Swift code needs the macOS 26 SDK |
+| CI | GitHub Actions: Go fmt, vet, race-enabled tests and govulncheck on Linux; viewer input tests with Node's built-in test runner; host rustfmt check, build, clippy (warnings as errors) and tests on a macOS 26 runner | The host needs ScreenCaptureKit, which only exists on macOS; the capture crate's Swift code needs the macOS 26 SDK |
 | Dependency updates | Dependabot: one grouped PR a week each for Rust crates, Go modules and GitHub Actions; webrtc crates excluded | The webrtc crates sit on a vendored, patched webrtc-dtls, so they are upgraded by hand |
 | Deploy (planned) | Docker, GitHub Actions, single-node k3s; coturn outside the cluster on host networking | Signaling is stateless HTTP and WebSocket; coturn needs a raw UDP port range |
 
@@ -125,13 +125,15 @@ RemoteBridge/
   signaling/           Go relay and static file server for client/
     main.go
   client/              Browser viewer
-    index.html
+    index.html           page, video, WebRTC setup; wires events to input.mjs
+    input.mjs            touch/mouse gestures and keys to input messages (no DOM)
+  tests/client/        Node tests for client/input.mjs
   docs/diagrams/       Diagram sources (.mmd) and the rendered PNGs shown above
   docs/deploy.md       Step-by-step VPS deployment of signaling and coturn
   docs/process-log.md  How the project was built: decisions, detours, mistakes
   docs/debugging-log.md  Problems hit, how each was diagnosed, and the fixes
   deploy/              Example configs: coturn, systemd unit, Caddy
-  .github/workflows/ci.yml  CI: Go checks, tests and vuln scan; macOS host build, lints, tests
+  .github/workflows/ci.yml  CI: Go checks, tests and vuln scan; viewer input tests; macOS host build, lints, tests
   .github/dependabot.yml   Weekly grouped dependency update PRs (webrtc crates excluded)
 ```
 
@@ -193,6 +195,18 @@ Closing the viewer makes the host log `disconnected` and then `failed`. That
 is the normal end of a session. Reloading the viewer prints
 `viewer joined, starting session N` and the video comes back within a
 couple of seconds.
+
+### Tests
+
+| Part | Command (from the repository root) |
+|---|---|
+| Signaling server | `cd signaling && go test ./...` |
+| Host agent | `cd host && cargo test` |
+| Viewer input logic | `node --test tests/client/*.test.mjs` (Node 20+, no packages) |
+
+The viewer tests cover gestures, keys and the phone keyboard field. A real
+phone is still needed for the browser and OS parts: the on-screen keyboard,
+pointer events and the WebRTC connection.
 
 ### Host run modes
 

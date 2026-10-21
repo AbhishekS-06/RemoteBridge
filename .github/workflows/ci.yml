@@ -34,6 +34,17 @@ jobs:
       - name: Check for known vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  client:
+    name: Viewer page (JS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Node's built-in test runner: no packages to install.
+      - run: node --test tests/client/*.test.mjs
+
   host:
     name: Host agent (Rust, macOS)
     # ScreenCaptureKit only exists on macOS, so the host cannot build on Linux.
