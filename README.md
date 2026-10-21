@@ -18,7 +18,7 @@ a phone. No third-party remote desktop service is involved.
 | v0 | Capture, H.264 encode, write to a local file | Done |
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
-| v3 | Input forwarding over data channels, touch mapping | In progress: touch works as a trackpad from the iPhone through the VPS (move, click, drag, right click, scroll); on-screen keyboard works from the iPhone on the LAN; VPS run pending |
+| v3 | Input forwarding over data channels, touch mapping | Done (v0.3.0): trackpad-style touch and the on-screen keyboard work from the iPhone through the VPS |
 | v4 | Signaling tokens, DTLS fingerprint pairing, multi-device | Planned |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
@@ -43,8 +43,8 @@ screen, so touch now works as a trackpad instead (relative cursor, tap to
 click, two-finger tap to right click, two-finger slide to scroll),
 verified on the iPhone through the VPS. Keyboard input (typed text, named
 keys such as enter and the arrows, and Cmd/Ctrl shortcuts) works from the
-iPhone's on-screen keyboard on the same Wi-Fi; the run through the VPS and
-the physical-keyboard path (arrows, shortcuts) are not yet tested.
+iPhone's on-screen keyboard, on the same Wi-Fi and through the VPS; the
+physical-keyboard path (arrows, shortcuts) is not yet tested.
 
 **Not implemented:** more than one viewer.
 
