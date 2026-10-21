@@ -10,7 +10,11 @@ screencapturekit = "10.0.3"
 # Prints the libraries' own logs (ICE, DTLS) when RUST_LOG is set, for example
 # RUST_LOG=webrtc_dtls=debug. Silent when it is not set.
 env_logger = "0.11"
-webrtc = "0.11"
+# pem: save and load the host's DTLS certificate (see pairing.rs).
+webrtc = { version = "0.11", features = ["pem"] }
+# Generates the host's certificate key; the same version webrtc uses.
+rcgen = "0.13"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 # rustls-tls-webpki-roots is what makes wss:// work. Without a TLS feature,
 # connect_async fails on any wss:// URL, which is what a public server uses.
