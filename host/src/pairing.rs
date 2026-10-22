@@ -121,14 +121,30 @@ pub fn pairing_code(host_fp: &str, viewer_fp: &str) -> String {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct PairedDevice {
     pub fingerprint: String,
+    /// Chosen by the user when approving. Empty for devices paired before
+    /// names existed.
+    #[serde(default)]
+    pub name: String,
     /// Unix seconds.
     pub paired_at: u64,
+    /// Unix seconds of the last connect, 0 if never since pairing.
+    #[serde(default)]
+    pub last_seen: u64,
 }
 
-/// The approved viewers, saved as JSON next to the certificate.
+/// The approved viewers, saved as JSON next to the certificate. Only the
+/// running host changes the file, so the copy in memory is the truth and
+/// every change is written straight back.
 pub struct PairedDevices {
     path: PathBuf,
     devices: Vec<PairedDevice>,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl PairedDevices {
@@ -142,28 +158,86 @@ impl PairedDevices {
         Ok(Self { path, devices })
     }
 
+    pub fn list(&self) -> &[PairedDevice] {
+        &self.devices
+    }
+
     pub fn contains(&self, fingerprint: &str) -> bool {
         self.devices.iter().any(|d| d.fingerprint == fingerprint)
     }
 
-    pub fn add(&mut self, fingerprint: &str) -> Result<(), BoxError> {
+    pub fn add(&mut self, fingerprint: &str, name: &str) -> Result<(), BoxError> {
         if self.contains(fingerprint) {
             return Ok(());
         }
-        let paired_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         self.devices.push(PairedDevice {
             fingerprint: fingerprint.to_owned(),
-            paired_at,
+            name: name.to_owned(),
+            paired_at: now(),
+            last_seen: now(),
         });
+        self.save()
+    }
+
+    /// Returns false if the device was not paired.
+    pub fn remove(&mut self, fingerprint: &str) -> Result<bool, BoxError> {
+        let before = self.devices.len();
+        self.devices.retain(|d| d.fingerprint != fingerprint);
+        if self.devices.len() == before {
+            return Ok(false);
+        }
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Returns false if the device was not paired.
+    pub fn rename(&mut self, fingerprint: &str, name: &str) -> Result<bool, BoxError> {
+        let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.fingerprint == fingerprint)
+        else {
+            return Ok(false);
+        };
+        device.name = name.to_owned();
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Records that a paired device just connected.
+    pub fn touch(&mut self, fingerprint: &str) -> Result<(), BoxError> {
+        if let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.fingerprint == fingerprint)
+        {
+            device.last_seen = now();
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Writes a temporary file and renames it over the old one, so a crash
+    /// mid-write can't leave a truncated list (which would fail to load).
+    fn save(&self) -> Result<(), BoxError> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
-        fs::write(&self.path, serde_json::to_string_pretty(&self.devices)?)?;
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_string_pretty(&self.devices)?)?;
+        fs::rename(&tmp, &self.path)?;
         Ok(())
     }
+}
+
+/// Cleans up a device name typed in the host page: trimmed, control
+/// characters dropped, at most 40 characters. Empty means "use a default".
+pub fn clean_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(40)
+        .collect()
 }
 
 #[cfg(test)]
@@ -216,12 +290,35 @@ mod tests {
 
         let mut devices = PairedDevices::load(&dir).unwrap();
         assert!(!devices.contains("ab:cd"));
-        devices.add("ab:cd").unwrap();
-        devices.add("ab:cd").unwrap();
+        devices.add("ab:cd", "iPhone").unwrap();
+        devices.add("ab:cd", "again").unwrap();
+        devices.add("ef:01", "Mac").unwrap();
+        assert!(devices.rename("ef:01", "Brave").unwrap());
+        assert!(!devices.rename("99:99", "x").unwrap());
+        assert!(devices.remove("ab:cd").unwrap());
+        assert!(!devices.remove("ab:cd").unwrap());
         let reloaded = PairedDevices::load(&dir).unwrap();
-        assert!(reloaded.contains("ab:cd"));
-        assert_eq!(reloaded.devices.len(), 1);
+        assert!(!reloaded.contains("ab:cd"));
+        assert_eq!(reloaded.list().len(), 1);
+        assert_eq!(reloaded.list()[0].name, "Brave");
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // paired.json written before names existed must still load.
+    #[test]
+    fn old_paired_file_loads() {
+        let old = r#"[{"fingerprint": "ab:cd", "paired_at": 5}]"#;
+        let devices: Vec<PairedDevice> = serde_json::from_str(old).unwrap();
+        assert_eq!(devices[0].name, "");
+        assert_eq!(devices[0].last_seen, 0);
+    }
+
+    #[test]
+    fn clean_name_trims_and_limits() {
+        assert_eq!(clean_name("  iPhone \n"), "iPhone");
+        assert_eq!(clean_name("a\u{7}b"), "ab");
+        assert_eq!(clean_name(&"x".repeat(60)).len(), 40);
+        assert_eq!(clean_name("   "), "");
     }
 }

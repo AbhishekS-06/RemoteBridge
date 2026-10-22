@@ -9,11 +9,11 @@
 //! outlives sessions, so the capture loop never has to know about them.
 //!
 //! An answer is only applied if it comes from a paired device (see
-//! pairing.rs). Otherwise the host prints the pairing code and waits for
-//! the user to approve it on stdin; until then the peer connection has no
-//! remote description, so nothing flows.
+//! pairing.rs). Otherwise the host page (admin.rs) shows the pairing code
+//! and waits for the user to approve it; until then the peer connection has
+//! no remote description, so nothing flows.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use webrtc::api::APIBuilder;
@@ -33,10 +33,11 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
-use tokio::io::AsyncBufReadExt;
+use tokio::sync::mpsc;
 
+use crate::admin::{Command, Pending, Shared};
 use crate::input::{InputEvent, InputSender};
-use crate::pairing::{self, PairedDevices};
+use crate::pairing;
 use crate::signaling::{BoxError, IceServerConfig, SignalMessage, SignalingClient};
 
 /// The one video track every session sends. A track can be bound to
@@ -67,22 +68,10 @@ pub async fn run_sessions(
     video_track: Arc<TrackLocalStaticRTP>,
     input: InputSender,
     certificate: RTCCertificate,
-    mut paired: PairedDevices,
+    shared: Arc<Mutex<Shared>>,
+    mut commands: mpsc::UnboundedReceiver<Command>,
 ) -> Result<(), BoxError> {
-    let host_fp = pairing::certificate_fingerprint(&certificate)?;
-    println!("host fingerprint: {host_fp}");
-    // Lines typed into the host's terminal, for approving new devices. A
-    // task reads them so the loop below can wait on stdin and signaling at
-    // once.
-    let (line_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
-    tokio::spawn(async move {
-        let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-        while let Ok(Some(line)) = stdin.next_line().await {
-            if line_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let host_fp = shared.lock().unwrap().host_fingerprint.clone();
 
     // The server sends its ICE servers first, before anything else. Wait for
     // them here because every peer connection needs them at construction.
@@ -99,29 +88,63 @@ pub async fn run_sessions(
     // to the wrong peer connection.
     let mut session: u32 = 0;
     let mut current: Option<Arc<RTCPeerConnection>> = None;
-    // An answer from an unpaired device, held until the user decides:
-    // (session, answer SDP, viewer fingerprint).
+    // An answer from an unpaired device, held until the user decides in the
+    // host page: (session, answer SDP, viewer fingerprint).
     let mut pending: Option<(u32, String, String)> = None;
     println!("waiting for a viewer...");
     loop {
         let message = tokio::select! {
             message = signaling.recv() => message?,
-            Some(line) = lines.recv() => {
-                let Some((pending_session, sdp, viewer_fp)) = pending.take() else {
-                    continue;
-                };
-                // A newer viewer replaced this one while the prompt was up.
-                let Some(pc) = current.as_ref().filter(|_| pending_session == session) else {
-                    continue;
-                };
-                if line.trim().eq_ignore_ascii_case("y") {
-                    paired.add(&viewer_fp)?;
-                    println!("device paired");
-                    apply_answer(pc, sdp, session).await;
-                } else {
-                    println!("device rejected");
-                    let _ = pc.close().await;
-                    current = None;
+            Some(command) = commands.recv() => {
+                match command {
+                    Command::Approve { fingerprint, name } => {
+                        // Only the device on screen, and only while its
+                        // session is still the current one.
+                        let Some((pending_session, sdp, viewer_fp)) =
+                            pending.take_if(|p| p.2 == fingerprint)
+                        else {
+                            continue;
+                        };
+                        let Some(pc) = current.clone().filter(|_| pending_session == session)
+                        else {
+                            continue;
+                        };
+                        {
+                            let mut shared = shared.lock().unwrap();
+                            let name = if name.is_empty() {
+                                format!("device {}", shared.paired.list().len() + 1)
+                            } else {
+                                name
+                            };
+                            shared.paired.add(&viewer_fp, &name)?;
+                            shared.pending = None;
+                            shared.active = Some((viewer_fp, Arc::clone(&pc)));
+                            println!("device paired as \"{name}\"");
+                        }
+                        apply_answer(&pc, sdp, session).await;
+                    }
+                    Command::Reject { fingerprint } => {
+                        if pending.take_if(|p| p.2 == fingerprint).is_none() {
+                            continue;
+                        }
+                        shared.lock().unwrap().pending = None;
+                        println!("device rejected");
+                        if let Some(pc) = current.take() {
+                            let _ = pc.close().await;
+                        }
+                    }
+                    Command::Disconnect { fingerprint } => {
+                        let active = shared
+                            .lock()
+                            .unwrap()
+                            .active
+                            .take_if(|(fp, _)| *fp == fingerprint);
+                        if let Some((_, pc)) = active {
+                            println!("removed device was connected, closing its session");
+                            let _ = pc.close().await;
+                            current = None;
+                        }
+                    }
                 }
                 continue;
             }
@@ -129,6 +152,11 @@ pub async fn run_sessions(
         match message {
             SignalMessage::ViewerJoined => {
                 pending = None;
+                {
+                    let mut shared = shared.lock().unwrap();
+                    shared.pending = None;
+                    shared.active = None;
+                }
                 // The old viewer is gone (the server keeps one viewer), so
                 // close its connection now instead of waiting ~30 s for ICE
                 // to time out. Closing also unbinds the video track and
@@ -162,15 +190,28 @@ pub async fn run_sessions(
                     println!("session {session}: answer has no usable fingerprint");
                     continue;
                 };
-                if paired.contains(&viewer_fp) {
+                let known = {
+                    let mut shared = shared.lock().unwrap();
+                    if shared.paired.contains(&viewer_fp) {
+                        shared.paired.touch(&viewer_fp)?;
+                        shared.active = Some((viewer_fp.clone(), Arc::clone(pc)));
+                        true
+                    } else {
+                        let code = pairing::pairing_code(&host_fp, &viewer_fp);
+                        println!(
+                            "session {session}: new device, pairing code {code}; approve or reject it in the host page"
+                        );
+                        shared.pending = Some(Pending {
+                            fingerprint: viewer_fp.clone(),
+                            code,
+                        });
+                        false
+                    }
+                };
+                if known {
                     println!("session {session}: paired device");
                     apply_answer(pc, sdp, session).await;
                 } else {
-                    println!(
-                        "session {session}: new device, pairing code {}",
-                        pairing::pairing_code(&host_fp, &viewer_fp)
-                    );
-                    println!("check it matches the code on the device, then approve? [y/N]");
                     pending = Some((session, sdp, viewer_fp));
                 }
             }

@@ -525,6 +525,27 @@ v4 because sign-in would throw them away.
    Copying the new binary over the running one failed (`dest open ...
    Failure`); the deploy doc said to scp straight over it. Fixed the doc:
    copy to `.new` and rename, then restart.
+5. Oct 22, paired-device management (issue #27). Pairing could only add
+   devices: `paired.json` held bare fingerprints, and revoking one meant
+   editing JSON and restarting. The first plan was terminal commands
+   (`devices`, `remove 2`) plus an offline subcommand. The user pointed out
+   that a finished product shouldn't make anyone type commands, so the host
+   now serves a page on the Mac instead (axum, `admin.rs`): approve with a
+   name, rename, remove, and see which device is connected. It replaces the
+   y/N prompt entirely. The page lives on the Mac, not the phone, because
+   the Mac decides who may connect; a paired phone that could approve
+   devices would let whoever holds it add more. Protection: 127.0.0.1 only,
+   a per-run key in the URL fragment sent back as a header. Records gained
+   `name` and `last_seen` with serde defaults, so old files still load
+   (checked with an old-format file), and saves go through a temp file and
+   rename. Removing the connected device closes its session immediately.
+   Headless Chrome run with a viewer tab and a host-page tab: codes match,
+   approve, connected badge, rename, remove stops frames, reload asks again,
+   reject sends nothing. My first version of that test said the video was
+   still playing after removal; it was measuring `video.currentTime`, which
+   keeps advancing on a live stream with no frames. Counting decoded frames
+   showed the stream had stopped. iPhone through the VPS, same day: rename,
+   remove (picture froze), reload asked again, approve brought video back.
 
 ## Mistakes worth remembering
 
