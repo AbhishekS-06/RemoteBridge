@@ -19,7 +19,7 @@ a phone. No third-party remote desktop service is involved.
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
 | v3 | Input forwarding over data channels, touch mapping | Done (v0.3.0): trackpad-style touch and the on-screen keyboard work from the iPhone through the VPS |
-| v4 | DTLS fingerprint pairing, several paired devices (one active at a time) | In progress: pairing written |
+| v4 | DTLS fingerprint pairing, several paired devices (one active at a time) | In progress: pairing, device list in the host page |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
 **What works today:** the Mac's screen appears in a browser through a
@@ -120,6 +120,8 @@ RemoteBridge/
     src/webrtc_host.rs   peer connection, video track, input data channel,
                          offer/answer handshake
     src/pairing.rs       host certificate, pairing code, paired devices
+    src/admin.rs         host page server (127.0.0.1 only, per-run key)
+    admin/index.html     host page: approve, rename, remove devices
     src/rtp_video.rs     H.264 frames to RTP packets, timestamped by capture time
     src/input.rs         input messages, frame-to-screen mapping, enigo
                          injector thread (mouse and keyboard)
@@ -176,11 +178,16 @@ RemoteBridge/
    work and the picture falls behind. The first release build takes a
    minute or two; later starts take seconds.
 
-The first time a device connects, the page and the host terminal both show
-a pairing code such as `3ES8-F2PT-1MEY`. Check that they match and type `y`
-in the host terminal. Nothing is sent to the device before that. The host
-remembers it (`~/.remotebridge/paired.json`), so later connections from the
-same browser start right away. See Security for what this protects.
+The host opens its own page on the Mac (`host page: http://127.0.0.1:8091/#key=...`
+in the log; `--no-open` skips opening it, `REMOTEBRIDGE_ADMIN_PORT` changes
+the port). The first time a device connects, the viewer and the host page
+both show a pairing code such as `3ES8-F2PT-1MEY`. Check that they match,
+give the device a name and click Approve. Nothing is sent to the device
+before that. The host remembers it (`~/.remotebridge/paired.json`), so later
+connections from the same browser start right away. The host page also
+lists paired devices (which one is connected, when each was last seen) and
+can rename or remove them; removing the connected device disconnects it at
+once, and it has to pair again. See Security for what this protects.
 
 At startup the host prints `input ready, display WxH points` (the Mac's
 screen size in points). It prints `peer connection state: connected` once
@@ -379,6 +386,11 @@ https://signal.example.com/?token=<secret>
   codes differ. The host applies a viewer's answer only after the user
   approves the code, or if the fingerprint was approved before. The page in
   turn refuses a host whose key differs from the one it paired with.
+- The host page can approve devices, so only the Mac may use it. It listens
+  on 127.0.0.1, and every request needs a random key made on each start.
+  The key is in the URL's `#fragment`, which the browser never sends to a
+  server, and the page sends it back in a custom header, which another
+  website cannot add without a CORS approval the host never gives.
 - The code is 60 bits (12 characters), not 6 digits: a relay can generate
   keys until a short code matches, which takes about a million tries for 6
   digits.
@@ -410,9 +422,11 @@ https://signal.example.com/?token=<secret>
   arrives, even when its WebSocket is connected and only the host is
   missing.
 - One viewer at a time, main display only, macOS host only.
-- Pairing is approved on the host's terminal, so the host must be run from a
-  terminal someone can reach. A rejected device's page keeps showing the
-  code until ICE gives up.
+- Pairing is approved in the host page on the Mac, so someone has to be at
+  the Mac to add a device. A rejected or removed device's page keeps showing
+  its last state until ICE gives up (about 30 s).
+- The host page link changes on every start (new key); an old tab shows a
+  message asking for the new link.
 - Clearing the browser's site data forgets its key; that browser has to be
   paired again.
 - No audio and no automatic reconnect.

@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RemoteBridge host</title>
+  <style>
+    :root {
+      --bg: #f6f6f4; --card: #ffffff; --text: #1d1d1f; --muted: #6e6e73;
+      --line: #e3e3e0; --accent: #0a66d8; --danger: #c4302b; --ok: #1f8a4c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161617; --card: #222224; --text: #f2f2f2; --muted: #9a9aa0;
+        --line: #343437; --accent: #4a96ff; --danger: #ff6b63; --ok: #45c47c;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    }
+    main { max-width: 640px; margin: 0 auto; padding: 32px 16px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 15px; margin: 28px 0 10px; color: var(--muted); font-weight: 600; }
+    .sub { color: var(--muted); margin: 0; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+      padding: 16px;
+    }
+    #pending { border-color: var(--accent); }
+    .code {
+      font: 600 30px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+      letter-spacing: 2px; margin: 10px 0;
+    }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    input[type=text] {
+      flex: 1; min-width: 160px; padding: 8px 10px; font: inherit; color: var(--text);
+      background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    }
+    button {
+      font: inherit; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--card); color: var(--text);
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { color: var(--danger); }
+    .device { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+    .device:first-child { border-top: 0; padding-top: 0; }
+    .device:last-child { padding-bottom: 0; }
+    .device .info { flex: 1; min-width: 0; }
+    .device .name { font-weight: 600; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .badge { color: var(--ok); font-size: 13px; font-weight: 600; margin-left: 6px; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .empty { color: var(--muted); }
+    #error { color: var(--danger); margin-top: 16px; }
+    footer { margin-top: 28px; color: var(--muted); font-size: 12px; word-break: break-all; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>RemoteBridge host</h1>
+  <p class="sub">Devices allowed to view and control this Mac.</p>
+
+  <div id="pending-wrap" hidden>
+    <h2>New device</h2>
+    <div class="card" id="pending">
+      <div>Check that the device shows this code:</div>
+      <div class="code" id="pending-code"></div>
+      <div class="meta">Only approve if the codes match exactly. A different code means someone may be in the middle.</div>
+      <div class="row">
+        <input type="text" id="pending-name" placeholder="Name, e.g. iPhone" maxlength="40">
+        <button class="primary" id="approve">Approve</button>
+        <button class="danger" id="reject">Reject</button>
+      </div>
+    </div>
+  </div>
+
+  <h2>Paired devices</h2>
+  <div class="card" id="devices"></div>
+
+  <div id="error" hidden></div>
+  <footer>Host fingerprint: <span class="mono" id="host-fp"></span></footer>
+</main>
+<script>
+  // The key is in the #fragment so it never reaches a server log; every API
+  // call sends it back as a header (see host/src/admin.rs).
+  const key = new URLSearchParams(location.hash.slice(1)).get("key");
+  let shownPending = null;
+
+  async function api(path, body) {
+    const options = { headers: { "x-admin-key": key || "" } };
+    if (body) {
+      options.method = "POST";
+      options.headers["content-type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    const response = await fetch(path, options);
+    if (response.status === 401) throw new Error("This link is out of date. Open the host page link the host printed when it started.");
+    if (!response.ok) throw new Error("Request failed: " + response.status);
+    return response.status === 204 ? null : response.json();
+  }
+
+  function showError(message) {
+    const el = document.getElementById("error");
+    el.hidden = !message;
+    el.textContent = message || "";
+  }
+
+  function formatTime(seconds) {
+    if (!seconds) return "never";
+    const date = new Date(seconds * 1000);
+    const minutes = Math.round((Date.now() - date) / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return minutes + " min ago";
+    return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  function shortFp(fp) {
+    return fp.replaceAll(":", "").slice(0, 8);
+  }
+
+  function renderPending(pending) {
+    const wrap = document.getElementById("pending-wrap");
+    wrap.hidden = !pending;
+    const fp = pending ? pending.fingerprint : null;
+    // Only redraw when the device changes, so a name being typed survives
+    // the once-a-second refresh.
+    if (fp === shownPending) return;
+    shownPending = fp;
+    if (pending) {
+      document.getElementById("pending-code").textContent = pending.code;
+      document.getElementById("pending-name").value = "";
+    }
+  }
+
+  function renderDevices(devices) {
+    const list = document.getElementById("devices");
+    list.replaceChildren();
+    if (devices.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No devices yet. Open the viewer page on a device to pair it.";
+      list.append(empty);
+      return;
+    }
+    for (const device of devices) {
+      const row = document.createElement("div");
+      row.className = "device";
+      const info = document.createElement("div");
+      info.className = "info";
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = device.name || "Unnamed device";
+      info.append(name);
+      if (device.connected) {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = "Connected";
+        info.append(badge);
+      }
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.innerHTML = '<span class="mono"></span> · paired <span></span> · last seen <span></span>';
+      const [fpSpan, pairedSpan, seenSpan] = meta.querySelectorAll("span");
+      fpSpan.textContent = shortFp(device.fingerprint);
+      fpSpan.title = device.fingerprint;
+      pairedSpan.textContent = formatTime(device.paired_at);
+      seenSpan.textContent = formatTime(device.last_seen);
+      info.append(meta);
+
+      const rename = document.createElement("button");
+      rename.textContent = "Rename";
+      rename.onclick = () => act(async () => {
+        const newName = prompt("New name", device.name);
+        if (newName !== null) await api("/api/rename", { fingerprint: device.fingerprint, name: newName });
+      });
+      const remove = document.createElement("button");
+      remove.className = "danger";
+      remove.textContent = "Remove";
+      remove.onclick = () => act(async () => {
+        const label = device.name || "this device";
+        const warning = device.connected ? " It is connected now and will be disconnected." : "";
+        if (confirm("Remove " + label + "?" + warning + " It will need to pair again to connect.")) {
+          await api("/api/remove", { fingerprint: device.fingerprint });
+        }
+      });
+      row.append(info, rename, remove);
+      list.append(row);
+    }
+  }
+
+  async function refresh() {
+    try {
+      const state = await api("/api/state");
+      document.getElementById("host-fp").textContent = state.host_fingerprint;
+      renderPending(state.pending);
+      renderDevices(state.devices);
+      showError(null);
+    } catch (e) {
+      showError(e.message);
+    }
+  }
+
+  async function act(fn) {
+    try {
+      await fn();
+    } catch (e) {
+      showError(e.message);
+    }
+    refresh();
+  }
+
+  document.getElementById("approve").onclick = () => act(() =>
+    api("/api/approve", { fingerprint: shownPending, name: document.getElementById("pending-name").value }));
+  document.getElementById("reject").onclick = () => act(() =>
+    api("/api/reject", { fingerprint: shownPending }));
+  document.getElementById("pending-name").onkeydown = (e) => {
+    if (e.key === "Enter") document.getElementById("approve").click();
+  };
+
+  if (!key) {
+    showError("This page needs the link the host printed when it started (it ends in #key=...).");
+  } else {
+    refresh();
+    setInterval(refresh, 1000);
+  }
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@ use screencapturekit::cm::CMSampleBufferExt;
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
 
+mod admin;
 mod encoder;
 mod input;
 mod pairing;
@@ -308,6 +309,27 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| e as Box<dyn std::error::Error>)?;
     let paired =
         pairing::PairedDevices::load(&state_dir).map_err(|e| e as Box<dyn std::error::Error>)?;
+    let host_fingerprint = pairing::certificate_fingerprint(&certificate)
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
+    println!("host fingerprint: {host_fingerprint}");
+
+    // The host page (admin.rs) is where new devices are approved and paired
+    // ones managed. --no-open skips opening it in the browser.
+    let shared = Arc::new(std::sync::Mutex::new(admin::Shared {
+        host_fingerprint,
+        paired,
+        pending: None,
+        active: None,
+    }));
+    let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+    let admin_url = admin::start(Arc::clone(&shared), command_tx)
+        .await
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
+    println!("host page: {admin_url}");
+    if !args.iter().any(|a| a == "--no-open") {
+        let _ = std::process::Command::new("open").arg(&admin_url).status();
+    }
+
     tokio::spawn(async move {
         if let Err(e) = webrtc_host::run_sessions(
             signaling,
@@ -315,7 +337,8 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             session_track,
             input,
             certificate,
-            paired,
+            shared,
+            command_rx,
         )
         .await
         {

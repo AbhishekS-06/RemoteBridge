@@ -15,7 +15,7 @@ sequenceDiagram
     V->>V: refuse if the host key differs from the saved one,<br/>otherwise show the pairing code
     V->>S: answer (SDP with candidates, session n)
     S->>H: answer
-    H->>H: viewer key paired? If not, print the same code<br/>and wait for y on the terminal before applying the answer
+    H->>H: viewer key paired? If not, print the same code<br/>and wait for Approve in the host page before applying the answer
     H-->>V: ICE connectivity checks (direct UDP,<br/>or relayed through coturn if blocked)
     H-->>V: DTLS handshake, then encrypted H.264 over SRTP
     V-->>H: input data channel opens (viewer to host messages)
