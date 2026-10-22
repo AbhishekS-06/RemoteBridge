@@ -457,7 +457,7 @@ before `main` (this one: `v3-input`).
     65532, and the image has no shell. Dependabot also watches the
     Dockerfile's base images now. Not yet run on the VPS.
 
-## v4: pairing and multi-device (Oct 21, in progress)
+## v4: pairing and multi-device (Oct 21 to 22)
 
 Planned with the user first. Decisions: several devices can be paired but
 only one is active at a time (a new one takes over, as with reloads);
@@ -547,6 +547,10 @@ v4 because sign-in would throw them away.
    showed the stream had stopped. iPhone through the VPS, same day: rename,
    remove (picture froze), reload asked again, approve brought video back.
 
+6. Wrap-up (Oct 22). CHANGELOG entry for 0.4.0 and the README status row
+   set to done. The v0.4.0 tag is also the first run of the image workflow's
+   push to GHCR, so that path is only proven once the tag is pushed.
+
 ## Mistakes worth remembering
 
 - Recommending a provider offer from memory without checking it was current.
@@ -593,8 +597,7 @@ v4 because sign-in would throw them away.
 
 ## Still to do
 
-- Workflow: version tags and releases (v0.3.0 at the end of v3), Dependabot, client
-  tests in CI, then a deploy pipeline.
+- Workflow: deploy job to a server that stays up (step 7b).
 - Destroy the test server and rotate the token when finished.
-- v3: input forwarding. v4: pairing and multi-device. v5: native client,
+- v5: Google sign-in replacing the shared token. v6: native client,
   Windows and Linux hosts.

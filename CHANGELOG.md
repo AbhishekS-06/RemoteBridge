@@ -4,6 +4,37 @@ Versions follow the project phases: v0.N.0 is the end of phase vN.
 Earlier phases (v0 to v2) were finished before releases were tagged, so
 they are listed here without tags.
 
+## [0.4.0] - 2026-10-22
+
+Only devices approved on the Mac can view or control it.
+
+### Added
+- Device pairing: each viewer keeps its own certificate (IndexedDB) and
+  the host keeps its own (~/.remotebridge). On first connect both sides
+  show a code derived from the two DTLS fingerprints; the host approves
+  only if they match. Unapproved devices get no video and no input.
+- The viewer remembers the host's fingerprint and refuses a host whose
+  key changed.
+- Host page on the Mac (127.0.0.1:8091, opened on start): approve or
+  reject new devices with a name, rename and remove paired devices,
+  see which one is connected and when each was last seen. Removing a
+  connected device ends its session. `--no-open` skips opening it.
+- Several paired devices, one active at a time.
+- Stream stats on the viewer page and connect timing on the host.
+- Signaling Docker image published to GHCR on version tags.
+- Dependabot (weekly, grouped; webrtc crates excluded) and viewer
+  page JS tests in CI.
+
+### Changed
+- The host always runs as a release build.
+- RTP timestamps come from capture time, a one-frame queue drops stale
+  frames, and the encoder has a 2.5 Mbit/s VBV cap. The viewer's jitter
+  buffer no longer grows past a second; it stays around 10-30 ms.
+
+### Removed
+- The y/N approval prompt in the host terminal (replaced by the host
+  page).
+
 ## [0.3.0] - 2026-10-21
 
 Input from the phone to the Mac over a WebRTC data channel.
@@ -46,4 +77,5 @@ Input from the phone to the Mac over a WebRTC data channel.
 - Screen capture with ScreenCaptureKit, encoded to an H.264 file with
   libx264.
 
+[0.4.0]: https://github.com/AbhishekS-06/RemoteBridge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/AbhishekS-06/RemoteBridge/releases/tag/v0.3.0
