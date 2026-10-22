@@ -19,7 +19,7 @@ a phone. No third-party remote desktop service is involved.
 | v1 | Go signaling, WebRTC host, browser client, same LAN | Done |
 | v2 | STUN, then self-hosted coturn, so it works across networks | Done: cellular and campus Wi-Fi verified |
 | v3 | Input forwarding over data channels, touch mapping | Done (v0.3.0): trackpad-style touch and the on-screen keyboard work from the iPhone through the VPS |
-| v4 | DTLS fingerprint pairing, several paired devices (one active at a time) | In progress: pairing, device list in the host page |
+| v4 | DTLS fingerprint pairing, several paired devices (one active at a time) | Done (v0.4.0) |
 | v5 | Native client, Windows and Linux hosts, clipboard, files, multi-monitor | Planned |
 
 **What works today:** the Mac's screen appears in a browser through a
