@@ -521,6 +521,10 @@ v4 because sign-in would throw them away.
 3. Oct 21, the same run showed tap-then-drag zooming windows instead of
    moving them: debugging log #13. Fixed by holding a tap's click back for
    300 ms.
+4. Oct 22, redeployed the server and page for the stream-latency rerun.
+   Copying the new binary over the running one failed (`dest open ...
+   Failure`); the deploy doc said to scp straight over it. Fixed the doc:
+   copy to `.new` and rename, then restart.
 
 ## Mistakes worth remembering
 
