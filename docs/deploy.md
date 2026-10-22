@@ -178,7 +178,8 @@ or use the Docker image below, which pins Go in `signaling/Dockerfile`.
 Each version tag (`v0.4.0`) publishes
 `ghcr.io/abhisheks-06/remotebridge-signaling:0.4.0` (and `latest`), with the
 viewer page inside. This replaces the copy-and-build steps above; Caddy
-and coturn stay as they are. Not yet used on the VPS.
+and coturn stay as they are. The test VPS runs it since 2026-10-22 (settings in
+/root/rb.env, passed with `--env-file`; container name `rb-sig`).
 
 ```
 sudo apt install -y docker.io

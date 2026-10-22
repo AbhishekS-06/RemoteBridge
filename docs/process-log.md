@@ -601,3 +601,23 @@ v4 because sign-in would throw them away.
 - Destroy the test server and rotate the token when finished.
 - v5: Google sign-in replacing the shared token. v6: native client,
   Windows and Linux hosts.
+
+2026-10-22: switched the VPS signaling server from the systemd binary to the
+published image (ghcr.io/abhisheks-06/remotebridge-signaling:0.4.0, container
+`rb-sig`, settings in /root/rb.env via --env-file). Detour: the long one-line
+`docker run` I gave kept arriving broken in the user's terminal (a newline
+inserted mid-command, so the image name ran as its own command). Moving the
+env vars into a file and the image name into a variable made every line short
+enough to paste. Lesson: for server commands, keep lines short; use an env
+file instead of several -e flags. The public pull worked without logging in
+to ghcr.io, so the package visibility is right.
+
+2026-10-22, later: own iPhone test on cellular through the Docker server
+connected (token matched) but a one-finger tap never clicked. My bug from
+the #13 drag fix: the held-click timer called setTimeout as `timers.set`,
+which browsers reject (debugging log #14). It shipped in v0.4.0 because the
+tests always replaced the timers and the phone check skipped a plain tap.
+Fixed in client/input.mjs with a regression test. Also on the Mac the long
+host command broke in the paste; env vars (REMOTEBRIDGE_SERVER/TOKEN) keep
+lines short. Side bug noticed, not fixed: `--server` with no value falls
+back to localhost instead of erroring.

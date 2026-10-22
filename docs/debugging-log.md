@@ -275,6 +275,29 @@ RUST_LOG=webrtc_dtls=debug,webrtc=debug cargo run -- webrtc ...   # library logs
 - **Lesson:** an input gesture has to be checked against what the OS makes
   of the event sequence, not only against the messages the page sends.
 
+### 14. One-finger tap never left-clicks on the iPhone
+
+- **Symptom:** Oct 22, iPhone on cellular through the VPS (now the Docker
+  image): cursor moves, scroll and two-finger right click work, a
+  one-finger tap does nothing.
+- **Diagnosis:** Host side is the same `Click` path for both buttons, and
+  right click worked, so the page was the suspect. The only difference in
+  `client/input.mjs` is that a left tap goes through the held-click timer
+  from #13. Its default was `{ set: setTimeout, clear: clearTimeout }`,
+  called as `timers.set(...)`. Headless Chrome: calling setTimeout as a
+  method of another object throws `Illegal invocation`. A tap through the
+  real module threw and sent nothing; with the fix it sent `click:left`.
+- **Cause:** the fix for #13 introduced it. The Node tests injected fake
+  timers, and Node's own setTimeout accepts any `this`, so nothing ran the
+  default in a browser-like way. The release check after #13 did not
+  include a single tap.
+- **Fix:** default timers wrap the calls (`(fn, ms) => setTimeout(fn, ms)`).
+  New test stubs `globalThis.setTimeout` to record `this` and fails on the
+  old code; 32 pass.
+- **Lesson:** a default that tests always replace is untested code. Test
+  the default path too, and tap through every gesture on the phone after
+  changing gesture code.
+
 ## Provider choice (not a bug, but it cost time)
 
 - **Azure for Students:** every small VM size returned

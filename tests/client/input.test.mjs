@@ -94,6 +94,24 @@ test("one-finger tap is a left click, sent once the drag window passes", () => {
   assert.deepEqual(sent, [{ type: "click", button: "left" }]);
 });
 
+test("default timers call setTimeout plainly, as browsers require", () => {
+  // Browsers throw "Illegal invocation" when setTimeout runs with another
+  // object as `this`; Node does not, so the stub checks it here.
+  const realSet = globalThis.setTimeout;
+  let calledWith = "not called";
+  globalThis.setTimeout = function (fn) { calledWith = this; fn(); return 1; };
+  try {
+    const sent = [];
+    const t = createTrackpad((m) => sent.push(m), () => ({ width: 200, height: 100 }));
+    t.down(ev(1, 50, 50, 1000));
+    t.up(ev(1, 50, 50, 1100, "pointerup"));
+    assert.equal(calledWith, undefined);
+    assert.deepEqual(sent, [{ type: "click", button: "left" }]);
+  } finally {
+    globalThis.setTimeout = realSet;
+  }
+});
+
 test("two quick taps send two clicks back to back (a double-click)", () => {
   const { sent, t, fire } = trackpad();
   t.down(ev(1, 50, 50, 1000));
