@@ -69,19 +69,51 @@ test("mouse ignores presses on the black bars and other buttons", () => {
 // --- trackpad ---
 
 // A 200x100 frame makes the expected fractions easy to read.
+// Held-back clicks run when the test calls fire(), not on a real timer.
 function trackpad() {
   const r = recorder();
-  const t = createTrackpad(r.send, () => ({ width: 200, height: 100 }));
-  return { sent: r.sent, t };
+  let pending = null;
+  const timers = {
+    set: (fn) => { pending = fn; return 1; },
+    clear: () => { pending = null; },
+  };
+  const t = createTrackpad(r.send, () => ({ width: 200, height: 100 }), timers);
+  const fire = () => { const fn = pending; pending = null; if (fn) fn(); };
+  return { sent: r.sent, t, fire };
 }
 const ev = (pointerId, clientX, clientY, timeStamp, type = "pointerdown") =>
   ({ pointerId, clientX, clientY, timeStamp, type });
 
-test("one-finger tap is a left click", () => {
-  const { sent, t } = trackpad();
+test("one-finger tap is a left click, sent once the drag window passes", () => {
+  const { sent, t, fire } = trackpad();
   t.down(ev(1, 50, 50, 1000));
   t.move(ev(1, 53, 52, 1050, "pointermove")); // wobble inside the slop
   t.up(ev(1, 53, 52, 1100, "pointerup"));
+  assert.deepEqual(sent, []);
+  fire();
+  assert.deepEqual(sent, [{ type: "click", button: "left" }]);
+});
+
+test("two quick taps send two clicks back to back (a double-click)", () => {
+  const { sent, t, fire } = trackpad();
+  t.down(ev(1, 50, 50, 1000));
+  t.up(ev(1, 50, 50, 1050, "pointerup"));
+  t.down(ev(2, 50, 50, 1150));
+  t.up(ev(2, 50, 50, 1200, "pointerup"));
+  fire(); // nothing left to send
+  assert.deepEqual(sent, [
+    { type: "click", button: "left" },
+    { type: "click", button: "left" },
+  ]);
+});
+
+test("touching again after a tap and holding still still clicks once", () => {
+  const { sent, t, fire } = trackpad();
+  t.down(ev(1, 50, 50, 1000));
+  t.up(ev(1, 50, 50, 1050, "pointerup"));
+  t.down(ev(2, 50, 50, 1150));
+  t.up(ev(2, 50, 50, 1150 + TAP_MAX_MS + 1, "pointerup"));
+  fire();
   assert.deepEqual(sent, [{ type: "click", button: "left" }]);
 });
 
@@ -104,28 +136,32 @@ test("one finger sliding moves the cursor by frame fractions, no click", () => {
   ]);
 });
 
-test("tap then touch-and-slide drags with the button held", () => {
-  const { sent, t } = trackpad();
+test("tap then touch-and-slide drags, and the tap itself is never clicked", () => {
+  const { sent, t, fire } = trackpad();
   t.down(ev(1, 50, 50, 1000));
   t.up(ev(1, 50, 50, 1050, "pointerup"));
   t.down(ev(2, 50, 50, 1050 + DRAG_AFTER_TAP_MS - 1));
   t.move(ev(2, 70, 50, 1400, "pointermove"));
   t.up(ev(2, 70, 50, 1450, "pointerup"));
+  fire();
   assert.deepEqual(sent, [
-    { type: "click", button: "left" },
     { type: "press", button: "left" },
     { type: "move_rel", dx: 0.1, dy: 0 },
     { type: "release", button: "left" },
   ]);
 });
 
-test("touching again too late after a tap moves instead of dragging", () => {
-  const { sent, t } = trackpad();
+test("touching again after the click was sent moves instead of dragging", () => {
+  const { sent, t, fire } = trackpad();
   t.down(ev(1, 50, 50, 1000));
   t.up(ev(1, 50, 50, 1050, "pointerup"));
+  fire(); // the drag window passed
   t.down(ev(2, 50, 50, 1050 + DRAG_AFTER_TAP_MS));
   t.move(ev(2, 70, 50, 1400, "pointermove"));
-  assert.deepEqual(sent.slice(1), [{ type: "move_rel", dx: 0.1, dy: 0 }]);
+  assert.deepEqual(sent, [
+    { type: "click", button: "left" },
+    { type: "move_rel", dx: 0.1, dy: 0 },
+  ]);
 });
 
 test("two-finger tap is a right click", () => {

@@ -164,8 +164,12 @@ binary over:
 
 ```
 cd signaling && GOTOOLCHAIN=go1.27.2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/remotebridge-signaling .
-scp /tmp/remotebridge-signaling <user>@<server-ip>:remotebridge/signaling/
+scp /tmp/remotebridge-signaling <user>@<server-ip>:remotebridge/signaling/remotebridge-signaling.new
+ssh <user>@<server-ip> 'cd remotebridge/signaling && mv -f remotebridge-signaling.new remotebridge-signaling && sudo systemctl restart remotebridge-signaling'
 ```
+
+Copy to a new name and rename: scp cannot overwrite the binary while the
+service is running it (`dest open ... Failure`).
 
 or use the Docker image below, which pins Go in `signaling/Dockerfile`.
 

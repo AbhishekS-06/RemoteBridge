@@ -69,6 +69,13 @@ export function createMouse(send) {
 //   tap, then touch again and slide: drag with the left button held
 //   two-finger tap: right click
 //   two fingers slide: scroll, the content following the fingers
+//
+// A tap's click is held back for DRAG_AFTER_TAP_MS, as a Mac trackpad
+// does: if the finger comes back and slides, that tap only started a drag
+// and is never sent. Sending it at once made the drag's press the second
+// press of a double-click on the Mac (macOS counts presses close together),
+// so dragging a title bar zoomed the window and dragging text selected
+// whole words.
 export const TAP_SLOP_PX = 10;        // a finger moving less than this is still tapping
 export const TAP_MAX_MS = 300;        // a touch held longer than this is not a tap
 export const DRAG_AFTER_TAP_MS = 300; // touching again this soon after a tap can drag
@@ -76,10 +83,12 @@ const TRACKPAD_SPEED = 1;             // cursor distance per finger distance
 
 // frameSize() returns the drawn frame ({width, height}) or null before the
 // video has a size; finger distances are divided by it.
-export function createTrackpad(send, frameSize) {
+// timers is replaceable so tests can run the held-back click by hand.
+export function createTrackpad(send, frameSize, timers = { set: setTimeout, clear: clearTimeout }) {
   const touches = new Map(); // pointerId -> latest {x, y} in page pixels
   let gesture = null;        // the current gesture, from first touch to last lift
-  let lastTapAt = 0;
+  let heldClick = null;      // timer for a tap's click that is waiting to be sent
+  const leftClick = { type: "click", button: "left" };
 
   // The fingers' average position. With two fingers this is what moves
   // when they slide together.
@@ -91,12 +100,21 @@ export function createTrackpad(send, frameSize) {
 
   function down(event) {
     if (touches.size === 0) {
+      // Touching again while the last tap's click is still held back: this
+      // touch decides it. Slide and it becomes a drag; anything else and
+      // the click is sent after all (owesClick).
+      const afterTap = heldClick !== null;
+      if (afterTap) {
+        timers.clear(heldClick);
+        heldClick = null;
+      }
       gesture = {
         startedAt: event.timeStamp,
         fingers: 1,
         travelled: 0,
         moved: false,
-        dragArmed: event.timeStamp - lastTapAt < DRAG_AFTER_TAP_MS,
+        dragArmed: afterTap,
+        owesClick: afterTap,
         dragging: false,
         last: null,
       };
@@ -107,6 +125,11 @@ export function createTrackpad(send, frameSize) {
     // the end of a scroll into a cursor move.
     if (touches.size >= 2 && gesture.fingers === 1) {
       gesture.fingers = 2;
+      gesture.dragArmed = false;
+      if (gesture.owesClick) {
+        gesture.owesClick = false;
+        send(leftClick);
+      }
       if (gesture.dragging) {
         gesture.dragging = false;
         send({ type: "release", button: "left" });
@@ -139,6 +162,7 @@ export function createTrackpad(send, frameSize) {
     }
     if (gesture.dragArmed && !gesture.dragging) {
       gesture.dragging = true;
+      gesture.owesClick = false; // the tap only started this drag
       send({ type: "press", button: "left" });
     }
     send({ type: "move_rel", dx: fx * TRACKPAD_SPEED, dy: fy * TRACKPAD_SPEED });
@@ -157,15 +181,22 @@ export function createTrackpad(send, frameSize) {
       send({ type: "release", button: "left" });
       return;
     }
+    if (ended.owesClick) send(leftClick);
     // pointercancel means the browser took the touch for itself (an
     // incoming call, a system gesture): never click for it.
     if (event.type === "pointercancel") return;
     if (ended.moved || event.timeStamp - ended.startedAt > TAP_MAX_MS) return;
     if (ended.fingers === 2) {
       send({ type: "click", button: "right" });
+    } else if (ended.owesClick) {
+      // Second tap of a double tap: both clicks go now, back to back, so
+      // the Mac counts them as a double-click.
+      send(leftClick);
     } else {
-      send({ type: "click", button: "left" });
-      lastTapAt = event.timeStamp;
+      heldClick = timers.set(() => {
+        heldClick = null;
+        send(leftClick);
+      }, DRAG_AFTER_TAP_MS);
     }
   }
 

@@ -247,3 +247,19 @@ func TestHostToldWhenViewerJoins(t *testing.T) {
 		}
 	})
 }
+
+func TestPageFilesAreNotCached(t *testing.T) {
+	srv := httptest.NewServer(noCache(http.FileServer(http.Dir("../client"))))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/input.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", got)
+	}
+}

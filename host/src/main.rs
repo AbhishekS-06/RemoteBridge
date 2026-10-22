@@ -1,17 +1,18 @@
 use std::fs::File;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next as ffmpeg;
 use screencapturekit::cm::CMSampleBufferExt;
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
-use webrtc::media::Sample;
 
 mod encoder;
 mod input;
 mod pairing;
+mod rtp_video;
 mod signaling;
 mod webrtc_host;
 
@@ -162,7 +163,11 @@ fn option_value(args: &[String], flag: &str, env_var: &str) -> Option<String> {
 /// tokio channel instead of std::sync::mpsc -- the WebRTC path awaits this
 /// channel from inside the tokio runtime, `CaptureHandler`'s consumer doesn't.
 struct WebRtcCaptureHandler {
-    tx: tokio::sync::mpsc::Sender<RawFrame>,
+    /// Each frame goes with the moment it was captured, which becomes its
+    /// RTP timestamp (see rtp_video.rs).
+    tx: tokio::sync::mpsc::Sender<(RawFrame, Instant)>,
+    /// Frames thrown away because the encoder had not taken the last one.
+    dropped: Arc<AtomicU64>,
 }
 
 impl SCStreamOutputTrait for WebRtcCaptureHandler {
@@ -176,10 +181,15 @@ impl SCStreamOutputTrait for WebRtcCaptureHandler {
         let Some(bytes) = (unsafe { guard.as_slice() }) else {
             return;
         };
+        let captured = Instant::now();
         let frame = pack_bgra(bytes, guard.width(), guard.height(), guard.bytes_per_row());
-        // blocking_send is correct here: this callback runs on Apple's
-        // capture thread, not inside the tokio runtime.
-        let _ = self.tx.blocking_send(frame);
+        // If the encoder is still busy with the previous frame, drop this
+        // one rather than queue it. A queue only adds delay: every frame in
+        // it is older than the screen by the time it is encoded. The channel
+        // holds one frame, so what gets encoded is at most a frame behind.
+        if self.tx.try_send((frame, captured)).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -319,8 +329,15 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .with_pixel_format(PixelFormat::BGRA)
         .with_fps(CAPTURE_FILE_FPS);
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-    let stream = start_capture_stream(config, WebRtcCaptureHandler { tx })?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let dropped = Arc::new(AtomicU64::new(0));
+    let stream = start_capture_stream(
+        config,
+        WebRtcCaptureHandler {
+            tx,
+            dropped: Arc::clone(&dropped),
+        },
+    )?;
 
     let mut h264_encoder =
         encoder::H264Encoder::new(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FILE_FPS as i32)?;
@@ -334,10 +351,16 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         ffmpeg::software::scaling::Flags::FAST_BILINEAR,
     )?;
 
+    let mut video = rtp_video::VideoSender::new(video_track);
     println!("streaming, ctrl-c to stop");
     let mut frame_num: i64 = 0;
     let mut write_failing = false;
-    while let Some(raw) = rx.recv().await {
+    // Printed every 5 s: what actually went out, to tell an overloaded host
+    // (dropped frames, slow encodes) from a network that can't keep up.
+    let mut stats_since = Instant::now();
+    let (mut stats_frames, mut stats_bytes, mut stats_encode) = (0u32, 0usize, Duration::ZERO);
+    while let Some((raw, captured)) = rx.recv().await {
+        let encode_started = Instant::now();
         let src_frame = bgra_frame(&raw);
         let mut yuv_frame = ffmpeg::frame::Video::empty();
         scaler.run(&src_frame, &mut yuv_frame)?;
@@ -346,17 +369,14 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
         let mut packet = Vec::new();
         h264_encoder.encode(&yuv_frame, &mut packet)?;
+        stats_encode += encode_started.elapsed();
         if !packet.is_empty() {
+            stats_frames += 1;
+            stats_bytes += packet.len();
             // A write fails when a viewer's connection has died but not yet
             // been replaced. That is no reason to stop the host, which must
             // stay up for the next viewer, so report it once and carry on.
-            let result = video_track
-                .write_sample(&Sample {
-                    data: packet.into(),
-                    duration: Duration::from_secs_f64(1.0 / CAPTURE_FILE_FPS as f64),
-                    ..Default::default()
-                })
-                .await;
+            let result = video.write_frame(packet.into(), captured).await;
             match result {
                 Ok(()) => write_failing = false,
                 Err(e) if !write_failing => {
@@ -365,6 +385,18 @@ async fn run_webrtc(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(_) => {}
             }
+        }
+        let elapsed = stats_since.elapsed();
+        if elapsed >= Duration::from_secs(5) && stats_frames > 0 {
+            println!(
+                "video: {:.1} fps, {:.0} kbit/s, encode {:.1} ms/frame, {} frames dropped",
+                stats_frames as f64 / elapsed.as_secs_f64(),
+                stats_bytes as f64 * 8.0 / 1000.0 / elapsed.as_secs_f64(),
+                stats_encode.as_secs_f64() * 1000.0 / stats_frames as f64,
+                dropped.swap(0, Ordering::Relaxed),
+            );
+            stats_since = Instant::now();
+            (stats_frames, stats_bytes, stats_encode) = (0, 0, Duration::ZERO);
         }
     }
 
