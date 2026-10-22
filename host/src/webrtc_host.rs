@@ -14,6 +14,7 @@
 //! remote description, so nothing flows.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -30,7 +31,7 @@ use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 use tokio::io::AsyncBufReadExt;
 
@@ -42,8 +43,8 @@ use crate::signaling::{BoxError, IceServerConfig, SignalMessage, SignalingClient
 /// several peer connections and unbinds itself when one closes, so the
 /// capture loop writes here forever and whichever viewer is connected gets
 /// the frames. Before the first viewer, writes go nowhere.
-pub fn new_video_track() -> Arc<TrackLocalStaticSample> {
-    Arc::new(TrackLocalStaticSample::new(
+pub fn new_video_track() -> Arc<TrackLocalStaticRTP> {
+    Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
             ..Default::default()
@@ -63,7 +64,7 @@ pub fn new_video_track() -> Arc<TrackLocalStaticSample> {
 pub async fn run_sessions(
     mut signaling: SignalingClient,
     force_relay: bool,
-    video_track: Arc<TrackLocalStaticSample>,
+    video_track: Arc<TrackLocalStaticRTP>,
     input: InputSender,
     certificate: RTCCertificate,
     mut paired: PairedDevices,
@@ -202,11 +203,14 @@ async fn start_session(
     signaling: &mut SignalingClient,
     server_ice: &[IceServerConfig],
     force_relay: bool,
-    video_track: &Arc<TrackLocalStaticSample>,
+    video_track: &Arc<TrackLocalStaticRTP>,
     input: &InputSender,
     certificate: &RTCCertificate,
     session: u32,
 ) -> Result<Arc<RTCPeerConnection>, BoxError> {
+    // Connection steps are logged with the time since the viewer joined, to
+    // see where setup time goes.
+    let started = Instant::now();
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs()?;
 
@@ -291,9 +295,14 @@ async fn start_session(
     // STUN, relay from TURN) and how ICE progresses. Only type and protocol
     // are printed, not addresses. If no relay candidate ever shows up, the
     // TURN server was not reached or rejected the credentials.
-    peer_connection.on_ice_candidate(Box::new(|candidate| {
+    peer_connection.on_ice_candidate(Box::new(move |candidate| {
         if let Some(c) = candidate {
-            println!("gathered {} candidate ({})", c.typ, c.protocol);
+            println!(
+                "[{:.1}s] gathered {} candidate ({})",
+                started.elapsed().as_secs_f64(),
+                c.typ,
+                c.protocol
+            );
         }
         Box::pin(async {})
     }));
@@ -303,7 +312,10 @@ async fn start_session(
     // callback.
     let pc_weak = Arc::downgrade(&peer_connection);
     peer_connection.on_ice_connection_state_change(Box::new(move |state| {
-        println!("ice connection state: {state}");
+        println!(
+            "[{:.1}s] ice connection state: {state}",
+            started.elapsed().as_secs_f64()
+        );
         let pc_weak = pc_weak.clone();
         Box::pin(async move {
             if state == RTCIceConnectionState::Connected
@@ -323,13 +335,19 @@ async fn start_session(
     peer_connection
         .sctp()
         .transport()
-        .on_state_change(Box::new(|state| {
-            println!("dtls state: {state}");
+        .on_state_change(Box::new(move |state| {
+            println!(
+                "[{:.1}s] dtls state: {state}",
+                started.elapsed().as_secs_f64()
+            );
             Box::pin(async {})
         }));
 
-    peer_connection.on_peer_connection_state_change(Box::new(|state| {
-        println!("peer connection state: {state}");
+    peer_connection.on_peer_connection_state_change(Box::new(move |state| {
+        println!(
+            "[{:.1}s] peer connection state: {state}",
+            started.elapsed().as_secs_f64()
+        );
         Box::pin(async {})
     }));
 
@@ -348,7 +366,10 @@ async fn start_session(
             session,
         })
         .await?;
-    println!("offer sent, waiting for viewer's answer...");
+    println!(
+        "[{:.1}s] offer sent, waiting for viewer's answer...",
+        started.elapsed().as_secs_f64()
+    );
 
     Ok(peer_connection)
 }

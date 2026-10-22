@@ -495,6 +495,32 @@ v4 because sign-in would throw them away.
    page saves the host key; reload connects without a prompt; a second
    profile answered `n` never connects; a host with a new key is refused by
    the page.
+   Mistake: I first sent the user to the Mac's LAN address from the iPhone
+   on campus Wi-Fi, which keeps devices from reaching each other (that is
+   why earlier campus tests used the VPS). Tested through the VPS instead;
+   pairing worked on the iPhone. PR #23.
+2. Oct 21, stream latency (found during the pairing test). Through the VPS
+   the iPhone's picture lagged far behind, and connecting took 10 to 20 s.
+   Debugging log #12 has the details. Summary: the host had always run as a
+   debug build (`--release` from now on); RTP timestamps did not follow
+   capture time, which made the browser's jitter buffer grow; frames could
+   queue behind a busy encoder; the encoder had no bitrate cap. Fixed with
+   my own RTP packetizing (`rtp_video.rs`), a one-frame queue that drops
+   stale frames, and a 2.5 Mbit/s cap. My first theory about timestamps was
+   backwards and a single A/B run seemed to confirm it; repeated runs and
+   reading webrtc-rs showed the real mechanism. The connect time is not
+   fixed yet: from the Mac it is 1.5 s, so the phone's side has to be
+   measured (the host now logs each connection step with a time).
+   iPhone run through the VPS: connected in 1.6 s on the host's clock
+   (paired device, direct path between campus subnets), about 28 fps at
+   0.5 to 1.6 Mbit/s, encode 4 to 7 ms, almost no dropped frames. The
+   page's stats line did not appear on the phone: either a cached old page
+   or getStats failing in WebKit. The server now sends
+   `Cache-Control: no-cache` for page files, and the stats line shows its
+   own error instead of failing silently.
+3. Oct 21, the same run showed tap-then-drag zooming windows instead of
+   moving them: debugging log #13. Fixed by holding a tap's click back for
+   300 ms.
 
 ## Mistakes worth remembering
 

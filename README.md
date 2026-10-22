@@ -120,6 +120,7 @@ RemoteBridge/
     src/webrtc_host.rs   peer connection, video track, input data channel,
                          offer/answer handshake
     src/pairing.rs       host certificate, pairing code, paired devices
+    src/rtp_video.rs     H.264 frames to RTP packets, timestamped by capture time
     src/input.rs         input messages, frame-to-screen mapping, enigo
                          injector thread (mouse and keyboard)
     .cargo/config.toml   Swift library path and rpath (Command Line Tools only)
@@ -169,8 +170,11 @@ RemoteBridge/
 3. Start the host from `host/`. Steps 2 and 3 can be swapped.
    ```
    cd host
-   cargo run -- webrtc
+   cargo run --release -- webrtc
    ```
+   Always use `--release`: a debug build is too slow at per-frame pixel
+   work and the picture falls behind. The first release build takes a
+   minute or two; later starts take seconds.
 
 The first time a device connects, the page and the host terminal both show
 a pairing code such as `3ES8-F2PT-1MEY`. Check that they match and type `y`
@@ -186,14 +190,18 @@ works like a trackpad:
 | Gesture | On the Mac |
 |---|---|
 | One finger slides | Cursor moves the same distance |
-| One-finger tap | Left click (two quick taps: double-click) |
-| Tap, then touch again and slide | Drag with the left button held |
+| One-finger tap | Left click, sent 0.3 s later (two quick taps: double-click) |
+| Tap, then touch again and slide | Drag with the left button held (the tap itself is not clicked) |
 | Two-finger tap | Right click |
 | Two fingers slide | Scroll, the content following the fingers |
 
 With a mouse (a browser on a computer) the left button clicks and drags at
 the pointer's position instead. The viewer's status box counts the events
-sent.
+sent, and once connected it adds a stats line: path (`host` is direct,
+`relay` is through coturn), round trip, frames per second, bitrate, and
+`buffer`, how long the browser holds frames before showing them. The host
+prints its side every 5 s (`video: fps, kbit/s, encode time, frames
+dropped`) and times each connection step from the moment a viewer joins.
 
 Keyboard: on another computer, click the video page and type; keys go to
 the Mac. Not from a browser on the host Mac itself: the viewer tab has focus,
@@ -325,6 +333,17 @@ https://signal.example.com/?token=<secret>
   a slow finger still moves the cursor.
 - **No B-frames, no lookahead.** Remote desktop is latency-sensitive, so
   compression efficiency is traded for lower delay.
+- **RTP timestamps follow capture time.** The screen is captured only
+  when it changes, so frames are 33 ms to seconds apart. webrtc-rs's
+  sample writer derives each timestamp from earlier frames' durations,
+  which made the browser hold more and more video (over 1 s measured). The
+  host packetizes frames itself (`rtp_video.rs`) and stamps each with when
+  it was captured.
+- **Stale frames are dropped, not queued.** Capture keeps at most one frame
+  waiting for the encoder; a queue only delays the picture.
+- **Bitrate is capped at 2.5 Mbit/s** on top of the quality target, so a
+  big screen change can't send more than a phone link or the relay
+  carries.
 - **Signaling is not part of the media path.** The server can be replaced or
   moved without touching the video pipeline.
 - **A patched copy of `webrtc-dtls` is vendored.** The version `webrtc-rs`

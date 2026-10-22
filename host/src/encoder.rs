@@ -84,9 +84,15 @@ impl H264Encoder {
         opts.set("tune", "zerolatency");
 
         // crf: constant rate factor, a quality target. Lower is better quality
-        // and bigger files. 23 is the libx264 default. In v2 this will likely
-        // become a bitrate cap instead, driven by measured bandwidth.
+        // and bigger files. 23 is the libx264 default.
         opts.set("crf", "23");
+
+        // A cap on top of crf (VBV). Without it a big screen change (a window
+        // opening, scrolling) briefly needs far more bits than a phone's link
+        // or the TURN relay carries; the packets queue in the network and
+        // the picture falls seconds behind. 2.5 Mbit/s with a 0.4 s buffer
+        // keeps any burst short; detail drops for a moment instead.
+        opts.set("x264-params", "vbv-maxrate=2500:vbv-bufsize=1000");
 
         // open_with consumes the unconfigured context and returns the opened
         // encoder. After this point the settings are locked in.

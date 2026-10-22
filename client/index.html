@@ -161,6 +161,54 @@
     let answerState = "waiting for offer";
     let render = () => {};
 
+    // Once a second, a line of receive stats from the browser's own WebRTC
+    // counters, to see where delay comes from: path (host = direct, relay =
+    // through coturn) and round trip, frames per second and bitrate
+    // arriving, and how long the browser holds frames before showing them
+    // (its jitter buffer). Deltas are over the last second.
+    let statsLine = "";
+    let lastVideo = null;
+    setInterval(async () => {
+      if (!pc || pc.connectionState !== "connected") return;
+      try {
+        statsLine = await readStats(pc);
+      } catch (e) {
+        // Shown rather than swallowed: a phone has no console to look in.
+        statsLine = "stats error: " + e;
+      }
+      render();
+    }, 1000);
+
+    async function readStats(pc) {
+      const report = await pc.getStats();
+      let video = null;
+      let pair = null;
+      report.forEach((s) => {
+        if (s.type === "inbound-rtp" && s.kind === "video") video = s;
+        if (s.type === "transport" && s.selectedCandidatePairId) pair = report.get(s.selectedCandidatePairId);
+      });
+      if (!pair) report.forEach((s) => { if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s; });
+      const parts = [];
+      if (pair) {
+        const local = report.get(pair.localCandidateId);
+        const remote = report.get(pair.remoteCandidateId);
+        parts.push("path " + (local ? local.candidateType : "?") + "-" + (remote ? remote.candidateType : "?"));
+        if (pair.currentRoundTripTime !== undefined) parts.push("rtt " + Math.round(pair.currentRoundTripTime * 1000) + "ms");
+      }
+      if (video && lastVideo) {
+        const seconds = (video.timestamp - lastVideo.timestamp) / 1000;
+        const emitted = video.jitterBufferEmittedCount - lastVideo.jitterBufferEmittedCount;
+        parts.push(Math.round((video.framesDecoded - lastVideo.framesDecoded) / seconds) + "fps");
+        parts.push(Math.round((video.bytesReceived - lastVideo.bytesReceived) * 8 / 1000 / seconds) + "kbit/s");
+        if (emitted > 0) {
+          parts.push("buffer " + Math.round((video.jitterBufferDelay - lastVideo.jitterBufferDelay) / emitted * 1000) + "ms");
+        }
+        parts.push("lost " + (video.packetsLost || 0) + " freezes " + (video.freezeCount || 0));
+      }
+      lastVideo = video;
+      return parts.join(" ");
+    }
+
     // Input. The gesture and key logic lives in input.mjs, without the DOM,
     // so it can be tested in Node; this part feeds it real events and sends
     // what it returns.
@@ -270,7 +318,8 @@
           "answer: " + answerState + "\n" +
           "candidates: " + (Object.entries(seen).map(([k, v]) => k + "=" + v).join(" ") || "none") + "\n" +
           "input: " + (inputChannel ? inputChannel.readyState : "none") + " (events sent: " + eventsSent + ")" +
-          (forceRelay ? "\nrelay-only mode" : "");
+          (forceRelay ? "\nrelay-only mode" : "") +
+          (statsLine ? "\n" + statsLine : "");
       };
       peer.onicecandidate = (event) => {
         if (event.candidate) {

@@ -218,7 +218,7 @@ func main() {
 	default:
 		log.Println("no TURN relay configured; peers will use STUN only")
 	}
-	http.Handle("/", http.FileServer(http.Dir("../client")))
+	http.Handle("/", noCache(http.FileServer(http.Dir("../client"))))
 	http.HandleFunc("/ws", h.handleWS)
 
 	addr := os.Getenv("REMOTEBRIDGE_ADDR")
@@ -229,4 +229,15 @@ func main() {
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// noCache makes browsers check with the server before reusing the page or
+// its modules. Without it a phone could keep running an old page after a
+// deploy, mixed with new modules, and a reload would not fix it. The files
+// are small and a 304 Not Modified answer is cheap.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }

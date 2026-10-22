@@ -220,6 +220,61 @@ RUST_LOG=webrtc_dtls=debug,webrtc=debug cargo run -- webrtc ...   # library logs
 - **Later:** the echo was removed on Oct 21 after the iPhone test (process
   log item 22), so this code is no longer in the page.
 
+### 12. iPhone video falls seconds behind the screen
+
+- **Symptom:** Oct 21, through the VPS: input reached the Mac at once, but
+  the iPhone's picture lagged so far it was unusable. Connecting also took
+  10 to 20 s.
+- **Diagnosis:**
+  - Ran the host with `--release`: clearly better. The host had always been
+    run as a debug build, where per-frame pixel copying in Rust is slow.
+  - Added measurements: the host prints fps, kbit/s, encode time and
+    dropped frames every 5 s; the page shows path, round trip, fps,
+    bitrate and the browser's jitter-buffer delay (how long it holds frames
+    before showing them).
+  - Headless Chrome on the Mac, three 25 s runs: one run's buffer climbed
+    from 30 ms to over 1 s; the others stayed low. Growing, not constant,
+    pointed at timing rather than bandwidth.
+  - First theory (wrong): the fixed 1/30 s sample duration ignores that
+    ScreenCaptureKit only sends frames when the screen changes. Switched to
+    the real gap: worse (about 140 ms every run). Reading webrtc-rs showed
+    why: a sample's duration spaces the *next* frame's RTP timestamp, so the
+    real gap lands one frame late.
+- **Cause:** RTP timestamps did not follow capture time. The browser's
+  jitter buffer compares packet arrival with timestamps; frames that arrive
+  "late" by varying amounts look like network jitter, so it keeps more
+  video buffered, and the delay can grow.
+- **Fix:** `host/src/rtp_video.rs` packetizes frames itself
+  (TrackLocalStaticRTP + H264Payloader) and stamps each with its capture
+  time at 90 kHz. Also: capture keeps at most one waiting frame and drops
+  the rest (a queue of stale frames is pure delay), and the encoder has a
+  2.5 Mbit/s cap so a big screen change can't flood the link. Three runs
+  after: 13 to 34 ms, no growth. Connect time on the Mac through the VPS
+  was 1.5 s; the iPhone's 10 to 20 s still needs its own measurement.
+- **Lesson:** measure before and after each change, more than once. One
+  run per variant gave a confident wrong answer (2 to 6 ms versus 140 ms)
+  that a second round reversed.
+
+### 13. Tap-then-drag on the iPhone zooms windows instead of moving them
+
+- **Symptom:** Oct 21, iPhone through the VPS: dragging windows with the
+  tap-then-slide gesture was erratic.
+- **Diagnosis:** Read the gesture code and enigo's macOS code. The page
+  sent the first tap as a click right away, then the drag's press. enigo
+  counts presses within the system double-click interval
+  (`nth_button_press`) and marks the press as click 2, so macOS received a
+  double-click-drag. A double-click on a title bar zooms or minimizes the
+  window; on text it selects by words. The trackpad test even asserted
+  `click` then `press`.
+- **Cause:** a tap's click was sent before knowing whether a drag follows.
+- **Fix:** `createTrackpad` in `client/input.mjs` holds a tap's click for
+  `DRAG_AFTER_TAP_MS` (300 ms), like a Mac trackpad. Touch again and slide:
+  the click is dropped and the drag is a single press. Touch again and lift:
+  both clicks go back to back (double-click). Otherwise the click is sent
+  when the timer runs out. Tests use a fake timer; 31 pass.
+- **Lesson:** an input gesture has to be checked against what the OS makes
+  of the event sequence, not only against the messages the page sends.
+
 ## Provider choice (not a bug, but it cost time)
 
 - **Azure for Students:** every small VM size returned
