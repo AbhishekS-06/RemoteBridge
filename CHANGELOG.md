@@ -4,6 +4,12 @@ Versions follow the project phases: v0.N.0 is the end of phase vN.
 Earlier phases (v0 to v2) were finished before releases were tagged, so
 they are listed here without tags.
 
+## [0.4.1] - 2026-10-22
+
+### Fixed
+- A one-finger tap on a touchscreen did not left-click. The held-click
+  timer called setTimeout in a way browsers reject ("Illegal invocation").
+
 ## [0.4.0] - 2026-10-22
 
 Only devices approved on the Mac can view or control it.
@@ -77,5 +83,6 @@ Input from the phone to the Mac over a WebRTC data channel.
 - Screen capture with ScreenCaptureKit, encoded to an H.264 file with
   libx264.
 
+[0.4.1]: https://github.com/AbhishekS-06/RemoteBridge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/AbhishekS-06/RemoteBridge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/AbhishekS-06/RemoteBridge/releases/tag/v0.3.0

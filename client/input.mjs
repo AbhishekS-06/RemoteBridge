@@ -83,8 +83,14 @@ const TRACKPAD_SPEED = 1;             // cursor distance per finger distance
 
 // frameSize() returns the drawn frame ({width, height}) or null before the
 // video has a size; finger distances are divided by it.
-// timers is replaceable so tests can run the held-back click by hand.
-export function createTrackpad(send, frameSize, timers = { set: setTimeout, clear: clearTimeout }) {
+// timers is replaceable so tests can run the held-back click by hand. The
+// defaults are wrapped: browsers throw "Illegal invocation" when setTimeout
+// is called as a method of another object (timers.set(...)).
+const browserTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (id) => clearTimeout(id),
+};
+export function createTrackpad(send, frameSize, timers = browserTimers) {
   const touches = new Map(); // pointerId -> latest {x, y} in page pixels
   let gesture = null;        // the current gesture, from first touch to last lift
   let heldClick = null;      // timer for a tap's click that is waiting to be sent
