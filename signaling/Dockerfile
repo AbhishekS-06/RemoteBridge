@@ -4,7 +4,7 @@
 
 # Build stage: the Go version is pinned here, so the server is always built
 # with a known toolchain (not whatever the host machine has installed).
-FROM golang:1.27.2-alpine AS build
+FROM golang:1.27.3-alpine AS build
 WORKDIR /src
 COPY signaling/go.mod signaling/go.sum ./
 RUN go mod download
